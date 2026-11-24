@@ -279,7 +279,9 @@ class TextEditorFragment : Fragment(), ConfirmReloadDialogFragment.Listener,
         if (!this::menuBinding.isInitialized) {
             return
         }
-        menuBinding.saveItem.isEnabled = viewModel.writeFileState.value.isReady
+        val isWritable = !argsFile.fileSystem.isReadOnly
+        menuBinding.saveItem.isVisible = isWritable
+        menuBinding.saveItem.isEnabled = isWritable && viewModel.writeFileState.value.isReady
     }
 
     @Parcelize

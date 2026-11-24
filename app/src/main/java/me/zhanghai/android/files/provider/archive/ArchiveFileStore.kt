@@ -20,7 +20,9 @@ internal class ArchiveFileStore(private val archiveFile: Path) : PosixFileStore(
 
     override fun type(): String = MimeType.guessFromPath(archiveFile.toString()).value
 
-    override fun isReadOnly(): Boolean = true
+    override fun isReadOnly(): Boolean =
+        archiveFile.fileSystem.isReadOnly ||
+            archiveFile.fileName?.toString()?.endsWith(".zip", ignoreCase = true) != true
 
     @Throws(IOException::class)
     override fun setReadOnly(readOnly: Boolean) {

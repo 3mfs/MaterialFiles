@@ -12,6 +12,8 @@ import android.os.IBinder
 import androidx.annotation.MainThread
 import java8.nio.file.Path
 import me.zhanghai.android.files.file.MimeType
+import me.zhanghai.android.files.provider.archive.archiver.ArchiveCompressionLevel
+import me.zhanghai.android.files.provider.archive.archiver.SevenZCompressionMethod
 import me.zhanghai.android.files.provider.common.PosixFileModeBit
 import me.zhanghai.android.files.provider.common.PosixGroup
 import me.zhanghai.android.files.provider.common.PosixUser
@@ -118,9 +120,16 @@ class FileJobService : Service() {
             format: Int,
             filter: Int,
             password: String?,
+            compressionLevel: ArchiveCompressionLevel = ArchiveCompressionLevel.NORMAL,
+            sevenZMethod: SevenZCompressionMethod = SevenZCompressionMethod.LZMA2,
             context: Context
         ) {
-            startJob(ArchiveFileJob(sources, archiveFile, format, filter, password), context)
+            startJob(
+                ArchiveFileJob(
+                    sources, archiveFile, format, filter, password, compressionLevel, sevenZMethod
+                ),
+                context
+            )
         }
 
         fun copy(sources: List<Path>, targetDirectory: Path, context: Context) {

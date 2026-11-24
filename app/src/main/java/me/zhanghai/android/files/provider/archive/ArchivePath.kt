@@ -9,11 +9,13 @@ import android.os.Parcel
 import android.os.Parcelable
 import java8.nio.file.LinkOption
 import java8.nio.file.Path
+import java8.nio.file.ProviderMismatchException
 import java8.nio.file.WatchEvent
 import java8.nio.file.WatchKey
 import java8.nio.file.WatchService
 import me.zhanghai.android.files.provider.common.ByteString
 import me.zhanghai.android.files.provider.common.ByteStringListPath
+import me.zhanghai.android.files.provider.common.LocalWatchService
 import me.zhanghai.android.files.provider.common.toByteString
 import me.zhanghai.android.files.provider.root.RootablePath
 import me.zhanghai.android.files.util.readParcelable
@@ -75,7 +77,10 @@ internal class ArchivePath : ByteStringListPath<ArchivePath>, RootablePath {
         events: Array<WatchEvent.Kind<*>>,
         vararg modifiers: WatchEvent.Modifier
     ): WatchKey {
-        throw UnsupportedOperationException()
+        if (watcher !is LocalWatchService) {
+            throw ProviderMismatchException(watcher.toString())
+        }
+        return watcher.register(this, events, *modifiers)
     }
 
     override fun isRootRequired(isAttributeAccess: Boolean): Boolean {

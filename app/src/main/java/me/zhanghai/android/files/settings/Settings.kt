@@ -17,6 +17,8 @@ import me.zhanghai.android.files.filelist.FileViewType
 import me.zhanghai.android.files.filelist.OpenApkDefaultAction
 import me.zhanghai.android.files.navigation.BookmarkDirectory
 import me.zhanghai.android.files.navigation.StandardDirectorySettings
+import me.zhanghai.android.files.provider.archive.archiver.ArchiveCompressionLevel
+import me.zhanghai.android.files.provider.archive.archiver.SevenZCompressionMethod
 import me.zhanghai.android.files.provider.root.RootStrategy
 import me.zhanghai.android.files.storage.FileSystemRoot
 import me.zhanghai.android.files.storage.PrimaryStorageVolume
@@ -65,6 +67,20 @@ object Settings {
 
     val CREATE_ARCHIVE_TYPE: SettingLiveData<Int> =
         ResourceIdSettingLiveData(R.string.pref_key_create_archive_type, R.id.zipRadio)
+
+    val CREATE_ARCHIVE_COMPRESSION_LEVEL: SettingLiveData<ArchiveCompressionLevel> =
+        EnumSettingLiveData(
+            R.string.pref_key_create_archive_compression_level,
+            R.string.pref_default_value_create_archive_compression_level,
+            ArchiveCompressionLevel::class.java
+        )
+
+    val CREATE_ARCHIVE_SEVEN_Z_METHOD: SettingLiveData<SevenZCompressionMethod> =
+        EnumSettingLiveData(
+            R.string.pref_key_create_archive_seven_z_method,
+            R.string.pref_default_value_create_archive_seven_z_method,
+            SevenZCompressionMethod::class.java
+        )
 
     val FTP_SERVER_ANONYMOUS_LOGIN: SettingLiveData<Boolean> =
         BooleanSettingLiveData(

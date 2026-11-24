@@ -30,7 +30,9 @@ import java8.nio.file.Paths
 import java8.nio.file.SimpleFileVisitor
 import java8.nio.file.StandardCopyOption
 import java8.nio.file.StandardOpenOption
+import java8.nio.file.attribute.BasicFileAttributeView
 import java8.nio.file.attribute.BasicFileAttributes
+import java8.nio.file.attribute.FileTime
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
 import kotlinx.coroutines.runBlocking
@@ -45,13 +47,24 @@ import me.zhanghai.android.files.file.fileProviderUri
 import me.zhanghai.android.files.file.loadFileItem
 import me.zhanghai.android.files.filelist.OpenFileAsDialogActivity
 import me.zhanghai.android.files.filelist.OpenFileAsDialogFragment
+import me.zhanghai.android.files.provider.archive.ArchivePasswordRequiredException
+import me.zhanghai.android.files.provider.archive.archiveApplyZipMutations
 import me.zhanghai.android.files.provider.archive.archiveFile
+import me.zhanghai.android.files.provider.archive.archiveReadEntriesBatch
+import me.zhanghai.android.files.provider.archive.archiver.ArchiveCompressionLevel
 import me.zhanghai.android.files.provider.archive.archiver.ArchiveWriter
+import me.zhanghai.android.files.provider.archive.archiver.ReadArchive
+import me.zhanghai.android.files.provider.archive.archiver.SevenZCompressionMethod
 import me.zhanghai.android.files.provider.archive.createArchiveRootPath
 import me.zhanghai.android.files.provider.archive.isArchivePath
+import me.zhanghai.android.files.provider.archive.isWritableZipArchive
+import me.zhanghai.android.files.provider.archive.toZipEntryPath
+import me.zhanghai.android.files.provider.archive.zip.FastZipEditor
 import me.zhanghai.android.files.provider.common.ByteString
 import me.zhanghai.android.files.provider.common.ByteStringBuilder
+import me.zhanghai.android.files.provider.common.EPOCH
 import me.zhanghai.android.files.provider.common.InvalidFileNameException
+import me.zhanghai.android.files.provider.common.LocalWatchService
 import me.zhanghai.android.files.provider.common.PosixFileModeBit
 import me.zhanghai.android.files.provider.common.PosixFileStore
 import me.zhanghai.android.files.provider.common.PosixGroup
@@ -613,7 +626,9 @@ class ArchiveFileJob(
     private val archiveFile: Path,
     private val format: Int,
     private val filter: Int,
-    private val password: String?
+    private val password: String?,
+    private val compressionLevel: ArchiveCompressionLevel = ArchiveCompressionLevel.NORMAL,
+    private val sevenZMethod: SevenZCompressionMethod = SevenZCompressionMethod.LZMA2
 ) : FileJob() {
     @Throws(IOException::class)
     override fun run() {
@@ -624,7 +639,9 @@ class ArchiveFileJob(
         var successful = false
         try {
             channel.use {
-                ArchiveWriter(channel, format, filter, password).use { writer ->
+                ArchiveWriter(
+                    channel, format, filter, password, compressionLevel, sevenZMethod
+                ).use { writer ->
                     val transferInfo = TransferInfo(scanInfo, archiveFile)
                     for (source in sources) {
                         val target = getTargetFileName(source)
@@ -743,6 +760,20 @@ class CopyFileJob(private val sources: List<Path>, private val targetDirectory: 
         )
         val transferInfo = TransferInfo(scanInfo, targetDirectory)
         val actionAllInfo = ActionAllInfo()
+        if (targetDirectory.isWritableZipArchive && !isExtract) {
+            insertIntoZipBatch(
+                sources = sources,
+                targetDirectory = targetDirectory,
+                type = CopyMoveType.COPY,
+                transferInfo = transferInfo,
+                actionAllInfo = actionAllInfo
+            )
+            return
+        }
+        if (isExtract && !targetDirectory.isArchivePath) {
+            extractBatch(sources, targetDirectory, transferInfo, actionAllInfo)
+            return
+        }
         for (source in sources) {
             val target = if (source.parent == targetDirectory) {
                 getTargetPathForDuplicate(source)
@@ -752,6 +783,246 @@ class CopyFileJob(private val sources: List<Path>, private val targetDirectory: 
             copyRecursively(source, target, isExtract, transferInfo, actionAllInfo)
             throwIfInterrupted()
         }
+    }
+
+    @Throws(IOException::class)
+    private fun extractBatch(
+        sources: List<Path>,
+        targetDirectory: Path,
+        transferInfo: TransferInfo,
+        actionAllInfo: ActionAllInfo
+    ) {
+        val sourcesByArchive = sources.groupBy { it.archiveFile }
+        for ((_, archiveSources) in sourcesByArchive) {
+            val pendingFiles = LinkedHashMap<Path, Path>()
+            for (source in archiveSources) {
+                val target = if (source.parent == targetDirectory) {
+                    getTargetPathForDuplicate(source)
+                } else {
+                    targetDirectory.resolveForeign(getTargetFileName(source))
+                }
+                Files.walkFileTree(source, object : SimpleFileVisitor<Path>() {
+                    @Throws(IOException::class)
+                    override fun preVisitDirectory(
+                        directory: Path,
+                        attributes: BasicFileAttributes
+                    ): FileVisitResult {
+                        val directoryInTarget = target.resolveForeign(source.relativize(directory))
+                        val copied = copy(
+                            directory, directoryInTarget, true, transferInfo, actionAllInfo
+                        )
+                        throwIfInterrupted()
+                        return if (copied) FileVisitResult.CONTINUE else FileVisitResult.SKIP_SUBTREE
+                    }
+
+                    @Throws(IOException::class)
+                    override fun visitFile(
+                        file: Path,
+                        attributes: BasicFileAttributes
+                    ): FileVisitResult {
+                        val fileInTarget = target.resolveForeign(source.relativize(file))
+                        if (attributes.isSymbolicLink) {
+                            copy(file, fileInTarget, true, transferInfo, actionAllInfo)
+                        } else {
+                            pendingFiles[file] = fileInTarget
+                        }
+                        throwIfInterrupted()
+                        return FileVisitResult.CONTINUE
+                    }
+
+                    @Throws(IOException::class)
+                    override fun visitFileFailed(
+                        file: Path,
+                        exception: IOException
+                    ): FileVisitResult = super.visitFileFailed(file, exception)
+                })
+                throwIfInterrupted()
+            }
+            if (pendingFiles.isEmpty()) {
+                continue
+            }
+            val representative = archiveSources.first()
+            while (pendingFiles.isNotEmpty()) {
+                throwIfInterrupted()
+                try {
+                    representative.archiveReadEntriesBatch(pendingFiles.keys) { sourcePath, entry, openStream ->
+                        throwIfInterrupted()
+                        val initialTarget = pendingFiles[sourcePath]
+                            ?: return@archiveReadEntriesBatch
+                        extractStreamEntry(
+                            source = sourcePath,
+                            initialTarget = initialTarget,
+                            entry = entry,
+                            openStream = openStream,
+                            transferInfo = transferInfo,
+                            actionAllInfo = actionAllInfo
+                        )
+                        pendingFiles.remove(sourcePath)
+                    }
+                    break
+                } catch (e: ArchivePasswordRequiredException) {
+                    if (!showUserAction(e)) {
+                        throw InterruptedIOException().apply { initCause(e) }
+                    }
+                }
+            }
+        }
+    }
+
+    @Throws(IOException::class)
+    private fun extractStreamEntry(
+        source: Path,
+        initialTarget: Path,
+        entry: ReadArchive.Entry,
+        openStream: () -> java.io.InputStream,
+        transferInfo: TransferInfo,
+        actionAllInfo: ActionAllInfo
+    ) {
+        var target = initialTarget
+        var replaceExisting = false
+        var retry: Boolean
+        do {
+            retry = false
+            try {
+                if (!replaceExisting && target.exists(LinkOption.NOFOLLOW_LINKS)) {
+                    throw FileAlreadyExistsException(source.toString(), target.toString(), null)
+                }
+                if (replaceExisting) {
+                    target.deleteIfExists()
+                }
+                postCopyMoveNotification(transferInfo, source, CopyMoveType.EXTRACT)
+                openStream().use { inputStream ->
+                    val outputStream = target.newOutputStream(
+                        StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE
+                    )
+                    var successful = false
+                    try {
+                        inputStream.copyTo(outputStream, PROGRESS_INTERVAL_MILLIS) {
+                            transferInfo.addToTransferredSize(it)
+                            postCopyMoveNotification(transferInfo, source, CopyMoveType.EXTRACT)
+                        }
+                        successful = true
+                    } finally {
+                        try {
+                            outputStream.close()
+                        } finally {
+                            if (!successful) {
+                                try {
+                                    target.deleteIfExists()
+                                } catch (e: IOException) {
+                                    e.printStackTrace()
+                                } catch (e: UnsupportedOperationException) {
+                                    e.printStackTrace()
+                                }
+                            }
+                        }
+                    }
+                }
+                val lastModifiedTime = entry.lastModifiedTime
+                    ?.takeIf { it != FileTime::class.EPOCH }
+                if (lastModifiedTime != null) {
+                    try {
+                        target.getFileAttributeView(BasicFileAttributeView::class.java)
+                            ?.setTimes(lastModifiedTime, null, null)
+                    } catch (e: IOException) {
+                        e.printStackTrace()
+                    } catch (e: UnsupportedOperationException) {
+                        e.printStackTrace()
+                    }
+                }
+                transferInfo.incrementTransferredFileCount()
+                postCopyMoveNotification(transferInfo, source, CopyMoveType.EXTRACT)
+            } catch (e: FileAlreadyExistsException) {
+                val sourceFile = source.loadFileItem()
+                val targetFile = target.loadFileItem()
+                if (targetFile.attributesNoFollowLinks.isDirectory) {
+                    throw e
+                }
+                if (actionAllInfo.replace) {
+                    replaceExisting = true
+                    retry = true
+                    continue
+                } else if (actionAllInfo.skipReplace) {
+                    transferInfo.skipFile(source)
+                    postCopyMoveNotification(transferInfo, source, CopyMoveType.EXTRACT)
+                    return
+                }
+                val result = showConflictDialog(sourceFile, targetFile, CopyMoveType.EXTRACT)
+                when (result.action) {
+                    FileJobConflictAction.MERGE_OR_REPLACE -> {
+                        if (result.isAll) {
+                            actionAllInfo.replace = true
+                        }
+                        replaceExisting = true
+                        retry = true
+                        continue
+                    }
+                    FileJobConflictAction.RENAME -> {
+                        target = target.resolveSibling(result.name)
+                        retry = true
+                        continue
+                    }
+                    FileJobConflictAction.SKIP -> {
+                        if (result.isAll) {
+                            actionAllInfo.skipReplace = true
+                        }
+                        transferInfo.skipFile(source)
+                        postCopyMoveNotification(transferInfo, source, CopyMoveType.EXTRACT)
+                        return
+                    }
+                    FileJobConflictAction.CANCELED -> {
+                        transferInfo.skipFile(source)
+                        postCopyMoveNotification(transferInfo, source, CopyMoveType.EXTRACT)
+                        return
+                    }
+                    FileJobConflictAction.CANCEL -> throw InterruptedIOException()
+                }
+            } catch (e: ArchivePasswordRequiredException) {
+                throw e
+            } catch (e: InterruptedIOException) {
+                throw e
+            } catch (e: IOException) {
+                e.printStackTrace()
+                if (actionAllInfo.skipCopyMoveError) {
+                    transferInfo.skipFile(source)
+                    postCopyMoveNotification(transferInfo, source, CopyMoveType.EXTRACT)
+                    return
+                }
+                val result = showErrorDialog(
+                    getString(R.string.file_job_extract_error_title_format, getFileName(source)),
+                    getString(
+                        R.string.file_job_extract_error_message_format,
+                        getFileName(target.parent),
+                        e.toString()
+                    ),
+                    getReadOnlyFileStore(target, e),
+                    true,
+                    getString(R.string.retry),
+                    getString(R.string.skip),
+                    getString(android.R.string.cancel)
+                )
+                when (result.action) {
+                    FileJobErrorAction.POSITIVE -> {
+                        retry = true
+                        continue
+                    }
+                    FileJobErrorAction.NEGATIVE -> {
+                        if (result.isAll) {
+                            actionAllInfo.skipCopyMoveError = true
+                        }
+                        transferInfo.skipFile(source)
+                        postCopyMoveNotification(transferInfo, source, CopyMoveType.EXTRACT)
+                        return
+                    }
+                    FileJobErrorAction.CANCELED -> {
+                        transferInfo.skipFile(source)
+                        postCopyMoveNotification(transferInfo, source, CopyMoveType.EXTRACT)
+                        return
+                    }
+                    FileJobErrorAction.NEUTRAL -> throw InterruptedIOException()
+                }
+            }
+        } while (retry)
     }
 
     @Throws(IOException::class)
@@ -875,6 +1146,120 @@ class CopyFileJob(private val sources: List<Path>, private val targetDirectory: 
 }
 
 @Throws(IOException::class)
+private fun FileJob.insertIntoZipBatch(
+    sources: List<Path>,
+    targetDirectory: Path,
+    type: CopyMoveType,
+    transferInfo: TransferInfo,
+    actionAllInfo: ActionAllInfo
+): List<Path> {
+    val mutations = mutableListOf<FastZipEditor.Mutation>()
+    val acceptedSources = mutableListOf<Path>()
+    val notifiedTargets = mutableListOf<Path>()
+
+    for (source in sources) {
+        var topTarget = targetDirectory.resolveForeign(getTargetFileName(source))
+        if (topTarget.exists(LinkOption.NOFOLLOW_LINKS)) {
+            val sourceFile = source.loadFileItem()
+            val targetFile = topTarget.loadFileItem()
+            val sourceIsDir = sourceFile.attributesNoFollowLinks.isDirectory
+            val targetIsDir = targetFile.attributesNoFollowLinks.isDirectory
+            if (!sourceIsDir && targetIsDir) {
+                throw FileAlreadyExistsException(source.toString(), topTarget.toString(), null)
+            }
+            val isMerge = sourceIsDir && targetIsDir
+            var proceed = false
+            if (isMerge && actionAllInfo.merge) {
+                proceed = true
+            } else if (!isMerge && actionAllInfo.replace) {
+                proceed = true
+            } else if ((isMerge && actionAllInfo.skipMerge) || (!isMerge && actionAllInfo.skipReplace)) {
+                transferInfo.skipFile(source)
+                postCopyMoveNotification(transferInfo, source, type)
+                continue
+            } else {
+                val result = showConflictDialog(sourceFile, targetFile, type)
+                when (result.action) {
+                    FileJobConflictAction.MERGE_OR_REPLACE -> {
+                        if (result.isAll) {
+                            if (isMerge) actionAllInfo.merge = true else actionAllInfo.replace = true
+                        }
+                        proceed = true
+                    }
+                    FileJobConflictAction.RENAME -> {
+                        topTarget = topTarget.resolveSibling(result.name)
+                        proceed = true
+                    }
+                    FileJobConflictAction.SKIP -> {
+                        if (result.isAll) {
+                            if (isMerge) actionAllInfo.skipMerge = true else actionAllInfo.skipReplace = true
+                        }
+                        transferInfo.skipFile(source)
+                        postCopyMoveNotification(transferInfo, source, type)
+                    }
+                    FileJobConflictAction.CANCELED -> {
+                        transferInfo.skipFile(source)
+                        postCopyMoveNotification(transferInfo, source, type)
+                    }
+                    FileJobConflictAction.CANCEL -> throw InterruptedIOException()
+                }
+            }
+            if (!proceed) {
+                continue
+            }
+        }
+
+        acceptedSources += source
+        notifiedTargets += topTarget
+
+        Files.walkFileTree(source, object : SimpleFileVisitor<Path>() {
+            @Throws(IOException::class)
+            override fun preVisitDirectory(
+                directory: Path,
+                attributes: BasicFileAttributes
+            ): FileVisitResult {
+                val directoryInTarget = topTarget.resolveForeign(source.relativize(directory))
+                mutations += FastZipEditor.Mutation.MakeDirectory(
+                    entryPath = directoryInTarget.toZipEntryPath(),
+                    lastModifiedTime = attributes.lastModifiedTime()
+                )
+                transferInfo.incrementTransferredFileCount()
+                postCopyMoveNotification(transferInfo, directory, type)
+                throwIfInterrupted()
+                return FileVisitResult.CONTINUE
+            }
+
+            @Throws(IOException::class)
+            override fun visitFile(file: Path, attributes: BasicFileAttributes): FileVisitResult {
+                val fileInTarget = topTarget.resolveForeign(source.relativize(file))
+                mutations += FastZipEditor.Mutation.PutPath(
+                    entryPath = fileInTarget.toZipEntryPath(),
+                    sourcePath = file,
+                    intervalMillis = PROGRESS_INTERVAL_MILLIS,
+                    progressListener = {
+                        transferInfo.addToTransferredSize(it)
+                        postCopyMoveNotification(transferInfo, file, type)
+                    }
+                )
+                transferInfo.incrementTransferredFileCount()
+                postCopyMoveNotification(transferInfo, file, type)
+                throwIfInterrupted()
+                return FileVisitResult.CONTINUE
+            }
+        })
+        throwIfInterrupted()
+    }
+
+    if (mutations.isNotEmpty()) {
+        targetDirectory.archiveApplyZipMutations(mutations)
+        for (target in notifiedTargets) {
+            LocalWatchService.onEntryCreated(target)
+        }
+    }
+    return acceptedSources
+}
+
+@Throws(IOException::class)
 private fun FileJob.copy(
     source: Path,
     target: Path,
@@ -946,7 +1331,60 @@ class DeleteFileJob(private val paths: List<Path>) : FileJob() {
         val scanInfo = scan(paths, R.plurals.file_job_delete_scan_notification_title_format)
         val transferInfo = TransferInfo(scanInfo, null)
         val actionAllInfo = ActionAllInfo()
-        for (path in paths) {
+        val zipPathsByArchive = paths.filter { it.isWritableZipArchive }
+            .groupBy { it.archiveFile }
+        for ((_, archivePaths) in zipPathsByArchive) {
+            val mutations = archivePaths.map {
+                FastZipEditor.Mutation.Delete(it.toZipEntryPath(), recursive = true)
+            }
+            var retry: Boolean
+            do {
+                retry = false
+                try {
+                    archivePaths.first().archiveApplyZipMutations(mutations)
+                    for (path in archivePaths) {
+                        transferInfo.incrementTransferredFileCount()
+                        postDeleteNotification(transferInfo, path)
+                        LocalWatchService.onEntryDeleted(path)
+                    }
+                } catch (e: InterruptedIOException) {
+                    throw e
+                } catch (e: IOException) {
+                    e.printStackTrace()
+                    if (actionAllInfo.skipDeleteError) {
+                        break
+                    }
+                    val firstPath = archivePaths.first()
+                    val result = showErrorDialog(
+                        getString(R.string.file_job_delete_error_title),
+                        getString(
+                            R.string.file_job_delete_error_message_format,
+                            getFileName(firstPath),
+                            e.toString()
+                        ),
+                        getReadOnlyFileStore(firstPath, e),
+                        true,
+                        getString(R.string.retry),
+                        getString(R.string.skip),
+                        getString(android.R.string.cancel)
+                    )
+                    when (result.action) {
+                        FileJobErrorAction.POSITIVE -> retry = true
+                        FileJobErrorAction.NEGATIVE -> {
+                            if (result.isAll) {
+                                actionAllInfo.skipDeleteError = true
+                            }
+                        }
+                        FileJobErrorAction.CANCELED -> {}
+                        FileJobErrorAction.NEUTRAL -> throw InterruptedIOException()
+                        else -> throw AssertionError(result.action)
+                    }
+                }
+            } while (retry)
+            throwIfInterrupted()
+        }
+        val otherPaths = paths.filterNot { it.isWritableZipArchive }
+        for (path in otherPaths) {
             deleteRecursively(path, transferInfo, actionAllInfo)
             throwIfInterrupted()
         }
@@ -1080,14 +1518,56 @@ class MoveFileJob(private val sources: List<Path>, private val targetDirectory: 
             }
             throwIfInterrupted()
         }
+        if (sourcesToMove.isEmpty()) {
+            return
+        }
         val scanInfo = scan(sourcesToMove, R.plurals.file_job_move_scan_notification_title_format)
         val transferInfo = TransferInfo(scanInfo, targetDirectory)
         val actionAllInfo = ActionAllInfo()
+        if (targetDirectory.isWritableZipArchive && sourcesToMove.none { it.isArchivePath }) {
+            val insertedSources = insertIntoZipBatch(
+                sources = sourcesToMove,
+                targetDirectory = targetDirectory,
+                type = CopyMoveType.MOVE,
+                transferInfo = transferInfo,
+                actionAllInfo = actionAllInfo
+            )
+            for (source in insertedSources) {
+                deleteRecursivelyForMove(source, actionAllInfo)
+                throwIfInterrupted()
+            }
+            return
+        }
         for (source in sourcesToMove) {
             val target = targetDirectory.resolveForeign(source.fileName)
             moveRecursively(source, target, transferInfo, actionAllInfo)
             throwIfInterrupted()
         }
+    }
+
+    @Throws(IOException::class)
+    private fun deleteRecursivelyForMove(path: Path, actionAllInfo: ActionAllInfo) {
+        Files.walkFileTree(path, object : SimpleFileVisitor<Path>() {
+            @Throws(IOException::class)
+            override fun visitFile(file: Path, attributes: BasicFileAttributes): FileVisitResult {
+                delete(file, null, actionAllInfo)
+                throwIfInterrupted()
+                return FileVisitResult.CONTINUE
+            }
+
+            @Throws(IOException::class)
+            override fun postVisitDirectory(
+                directory: Path,
+                exception: IOException?
+            ): FileVisitResult {
+                if (exception != null) {
+                    throw exception
+                }
+                delete(directory, null, actionAllInfo)
+                throwIfInterrupted()
+                return FileVisitResult.CONTINUE
+            }
+        })
     }
 
     @Throws(IOException::class)

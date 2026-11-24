@@ -10,6 +10,9 @@ import java8.nio.channels.SeekableByteChannel
 import java8.nio.charset.StandardCharsets
 import java8.nio.file.Path
 import me.zhanghai.android.files.R
+import me.zhanghai.android.files.provider.archive.zip.FastZipFile
+import me.zhanghai.android.files.provider.archive.zip.SliceSeekableByteChannel
+import me.zhanghai.android.files.provider.archive.zip.StreamingEntrySeekableByteChannel
 import me.zhanghai.android.files.provider.common.DelegateForceableSeekableByteChannel
 import me.zhanghai.android.files.provider.common.DelegateInputStream
 import me.zhanghai.android.files.provider.common.DelegateNonForceableSeekableByteChannel
@@ -28,56 +31,102 @@ import java.io.InputStream
 import java.nio.charset.Charset
 
 object ArchiveReader {
+    class ArchiveIndex(
+        val entries: Map<Path, ReadArchive.Entry>,
+        val tree: Map<Path, List<Path>>,
+        val zipEntries: Map<Path, FastZipFile.ZipEntryInfo>?
+    )
+
     @Throws(IOException::class)
     fun readEntries(
         file: Path,
         passwords: List<String>,
         rootPath: Path
-    ): Pair<Map<Path, ReadArchive.Entry>, Map<Path, List<Path>>> {
+    ): ArchiveIndex {
         val entries = mutableMapOf<Path, ReadArchive.Entry>()
-        val rawEntries = readEntries(file, passwords)
-        for (entry in rawEntries) {
-            var path = rootPath.resolve(entry.name)
-            // Normalize an absolute path to prevent path traversal attack.
-            if (!path.isAbsolute) {
-                // TODO: Will this actually happen?
-                throw AssertionError("Path must be absolute: $path")
-            }
-            if (path.nameCount > 0) {
-                path = path.normalize()
-                if (path.nameCount == 0) {
-                    // Don't allow a path to become the root path only after normalization.
-                    continue
-                }
-            } else {
-                if (!entry.isDirectory) {
-                    // Ignore a root path that's not a directory
-                    continue
+        var zipEntriesMap: MutableMap<Path, FastZipFile.ZipEntryInfo>? = null
+
+        val fastZipList = tryReadZipEntries(file)
+        if (fastZipList != null) {
+            zipEntriesMap = mutableMapOf()
+            for (zipEntry in fastZipList) {
+                val path = resolveNormalizedPath(rootPath, zipEntry.name, zipEntry.isDirectory)
+                    ?: continue
+                val readEntry = zipEntry.toReadArchiveEntry()
+                if (!entries.containsKey(path)) {
+                    entries[path] = readEntry
+                    zipEntriesMap[path] = zipEntry
                 }
             }
-            entries.getOrPut(path) { entry }
+        } else {
+            val rawEntries = readEntries(file, passwords)
+            for (entry in rawEntries) {
+                val path = resolveNormalizedPath(rootPath, entry.name, entry.isDirectory)
+                    ?: continue
+                entries.getOrPut(path) { entry }
+            }
         }
+
         entries.getOrPut(rootPath) { createDirectoryEntry("") }
         val tree = mutableMapOf<Path, MutableList<Path>>()
         tree[rootPath] = mutableListOf()
         val paths = entries.keys.toList()
         for (path in paths) {
-            var path = path
+            var currentPath = path
             while (true) {
-                val parentPath = path.parent ?: break
-                val entry = entries[path]!!
+                val parentPath = currentPath.parent ?: break
+                val entry = entries[currentPath]!!
                 if (entry.isDirectory) {
-                    tree.getOrPut(path) { mutableListOf() }
+                    tree.getOrPut(currentPath) { mutableListOf() }
                 }
-                tree.getOrPut(parentPath) { mutableListOf() }.add(path)
+                tree.getOrPut(parentPath) { mutableListOf() }.add(currentPath)
                 if (entries.containsKey(parentPath)) {
                     break
                 }
                 entries[parentPath] = createDirectoryEntry(parentPath.toString())
-                path = parentPath
+                currentPath = parentPath
             }
         }
-        return entries to tree
+        return ArchiveIndex(entries, tree, zipEntriesMap)
+    }
+
+    private fun resolveNormalizedPath(
+        rootPath: Path,
+        entryName: String,
+        isDirectory: Boolean
+    ): Path? {
+        var path = rootPath.resolve(entryName)
+        if (!path.isAbsolute) {
+            throw AssertionError("Path must be absolute: $path")
+        }
+        if (path.nameCount > 0) {
+            path = path.normalize()
+            if (path.nameCount == 0) {
+                // Don't allow a path to become the root path only after normalization.
+                return null
+            }
+        } else if (!isDirectory) {
+            return null
+        }
+        return path
+    }
+
+    private fun tryReadZipEntries(file: Path): List<FastZipFile.ZipEntryInfo>? {
+        val channel = try {
+            CacheSizeSeekableByteChannel(file.newByteChannel())
+        } catch (_: Exception) {
+            return null
+        }
+        return channel.use {
+            try {
+                if (!FastZipFile.isZipChannel(it)) {
+                    return null
+                }
+                FastZipFile.readEntries(it, archiveFileNameCharset)
+            } catch (_: Exception) {
+                null
+            }
+        }
     }
 
     private fun createDirectoryEntry(name: String): ReadArchive.Entry {
@@ -102,7 +151,18 @@ object ArchiveReader {
     }
 
     @Throws(IOException::class)
-    fun newInputStream(file: Path, passwords: List<String>, entry: ReadArchive.Entry): InputStream? {
+    fun newInputStream(
+        file: Path,
+        passwords: List<String>,
+        entry: ReadArchive.Entry,
+        zipEntry: FastZipFile.ZipEntryInfo? = null
+    ): InputStream? {
+        if (zipEntry != null && zipEntry.isFastReadSupported) {
+            val channel = CacheSizeSeekableByteChannel(file.newByteChannel())
+            return FastZipFile.openEntryInputStream(
+                channel, zipEntry, passwords, closeChannelOnClose = true, archiveFileNameCharset
+            )
+        }
         val charset = archiveFileNameCharset
         val (archive, closeable) = openArchive(file, passwords)
         var successful = false
@@ -123,6 +183,99 @@ object ArchiveReader {
         } finally {
             if (!successful) {
                 closeable.close()
+            }
+        }
+    }
+
+    @Throws(IOException::class)
+    fun newByteChannel(
+        file: Path,
+        passwords: List<String>,
+        entry: ReadArchive.Entry,
+        zipEntry: FastZipFile.ZipEntryInfo? = null
+    ): SeekableByteChannel {
+        if (zipEntry != null && zipEntry.isFastReadSupported &&
+            !zipEntry.isEncrypted && zipEntry.actualMethod == 0
+        ) {
+            val channel = CacheSizeSeekableByteChannel(file.newByteChannel())
+            var successful = false
+            return try {
+                val (dataOffset, _) = FastZipFile.getEntryDataRange(channel, zipEntry)
+                val slice = SliceSeekableByteChannel(channel, dataOffset, zipEntry.uncompressedSize)
+                successful = true
+                slice
+            } finally {
+                if (!successful) {
+                    channel.close()
+                }
+            }
+        }
+        return StreamingEntrySeekableByteChannel(entry.size) {
+            newInputStream(file, passwords, entry, zipEntry)
+                ?: throw IOException("Archive entry not found: ${entry.name}")
+        }
+    }
+
+    /**
+     * Reads multiple entries from an archive in a single pass (O(1) per entry for ZIP, single
+     * sequential pass for solid 7z/tar/rar), avoiding O(N^2) archive re-opening.
+     */
+    @Throws(IOException::class)
+    fun readEntriesBatch(
+        file: Path,
+        passwords: List<String>,
+        rootPath: Path,
+        zipEntries: Map<Path, FastZipFile.ZipEntryInfo>?,
+        requestedPaths: Set<Path>,
+        onEntry: (path: Path, entry: ReadArchive.Entry, openStream: () -> InputStream) -> Unit
+    ) {
+        if (requestedPaths.isEmpty()) return
+
+        val remainingForLibArchive = mutableSetOf<Path>()
+        if (zipEntries != null) {
+            val fastZipPaths = requestedPaths.filter {
+                val ze = zipEntries[it]
+                ze != null && ze.isFastReadSupported
+            }
+            if (fastZipPaths.isNotEmpty()) {
+                val charset = archiveFileNameCharset
+                CacheSizeSeekableByteChannel(file.newByteChannel()).use { channel ->
+                    for (path in fastZipPaths) {
+                        val ze = zipEntries[path]!!
+                        onEntry(path, ze.toReadArchiveEntry()) {
+                            FastZipFile.openEntryInputStream(
+                                channel, ze, passwords, closeChannelOnClose = false, charset
+                            )
+                        }
+                    }
+                }
+            }
+            for (path in requestedPaths) {
+                val ze = zipEntries[path]
+                if (ze == null || !ze.isFastReadSupported) {
+                    remainingForLibArchive += path
+                }
+            }
+        } else {
+            remainingForLibArchive += requestedPaths
+        }
+
+        if (remainingForLibArchive.isEmpty()) return
+
+        val charset = archiveFileNameCharset
+        val (archive, closeable) = openArchive(file, passwords)
+        val remaining = remainingForLibArchive.toMutableSet()
+        closeable.use {
+            while (remaining.isNotEmpty()) {
+                val currentEntry = archive.readEntry(charset) ?: break
+                val normalized = resolveNormalizedPath(
+                    rootPath, currentEntry.name, currentEntry.isDirectory
+                ) ?: continue
+                if (remaining.remove(normalized)) {
+                    onEntry(normalized, currentEntry) {
+                        NonClosingInputStream(archive.newDataInputStream())
+                    }
+                }
             }
         }
     }
@@ -187,7 +340,7 @@ object ArchiveReader {
         override fun size(): Long = size
     }
 
-    private val archiveFileNameCharset: Charset
+    val archiveFileNameCharset: Charset
         get() =
             if (isRunningAsRoot) {
                 try {
@@ -229,6 +382,14 @@ object ArchiveReader {
             super.close()
 
             closeable.close()
+        }
+    }
+
+    private class NonClosingInputStream(
+        inputStream: InputStream
+    ) : DelegateInputStream(inputStream) {
+        override fun close() {
+            // Keep underlying ReadArchive stream open for subsequent entries in the batch.
         }
     }
 }

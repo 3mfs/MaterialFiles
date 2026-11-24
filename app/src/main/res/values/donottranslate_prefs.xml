@@ -19,6 +19,10 @@
     <string name="pref_default_value_file_list_view_type">0</string>
     <string name="pref_key_file_list_sort_options">key_file_list_sort_options</string>
     <string name="pref_key_create_archive_type">key_create_archive_type</string>
+    <string name="pref_key_create_archive_compression_level">key_create_archive_compression_level</string>
+    <string name="pref_default_value_create_archive_compression_level">2</string>
+    <string name="pref_key_create_archive_seven_z_method">key_create_archive_seven_z_method</string>
+    <string name="pref_default_value_create_archive_seven_z_method">0</string>
 
     <string name="pref_key_ftp_server_state">key_ftp_server_state</string>
     <bool name="pref_visible_ftp_server_add_tile">false</bool>

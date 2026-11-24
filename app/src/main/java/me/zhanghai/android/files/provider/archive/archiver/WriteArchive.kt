@@ -20,22 +20,49 @@ import java.io.Closeable
 import java.io.IOException
 import java.io.OutputStream
 import java.nio.ByteBuffer
+import kotlin.math.min
 
 class WriteArchive @Throws(ArchiveException::class) constructor(
     channel: SeekableByteChannel,
     format: Int,
     filter: Int,
-    password: String?
+    password: String?,
+    compressionLevel: ArchiveCompressionLevel = ArchiveCompressionLevel.NORMAL,
+    sevenZMethod: SevenZCompressionMethod = SevenZCompressionMethod.LZMA2
 ) : Closeable {
     private val archive = Archive.writeNew()
 
     init {
         var successful = false
         try {
-            Archive.writeSetBytesPerBlock(archive, DEFAULT_BUFFER_SIZE)
+            Archive.writeSetBytesPerBlock(archive, IO_BUFFER_SIZE)
             Archive.writeSetBytesInLastBlock(archive, 1)
             Archive.writeSetFormat(archive, format)
             Archive.writeAddFilter(archive, filter)
+            when (format) {
+                Archive.FORMAT_ZIP -> {
+                    if (compressionLevel == ArchiveCompressionLevel.STORE) {
+                        trySetFormatOption("compression", "store")
+                    } else {
+                        trySetFormatOption("compression-level", compressionLevel.zipLevel.toString())
+                    }
+                }
+                Archive.FORMAT_7ZIP -> {
+                    trySetFormatOption("compression", sevenZMethod.libArchiveValue)
+                    if (sevenZMethod != SevenZCompressionMethod.COPY) {
+                        trySetFormatOption(
+                            "compression-level", compressionLevel.sevenZLevel.toString()
+                        )
+                        val threads = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
+                        trySetFormatOption("threads", threads.toString())
+                    }
+                }
+            }
+            if (filter == Archive.FILTER_XZ) {
+                trySetFilterOption("compression-level", compressionLevel.xzLevel.toString())
+                val threads = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
+                trySetFilterOption("threads", threads.toString())
+            }
             if (password != null) {
                 require(format == Archive.FORMAT_ZIP)
                 Archive.writeSetPassphrase(archive, password.toByteArray())
@@ -53,6 +80,24 @@ class WriteArchive @Throws(ArchiveException::class) constructor(
             if (!successful) {
                 close()
             }
+        }
+    }
+
+    private fun trySetFormatOption(key: String, value: String) {
+        try {
+            Archive.writeSetFormatOption(
+                archive, null, key.toByteArray(), value.toByteArray()
+            )
+        } catch (_: ArchiveException) {
+        }
+    }
+
+    private fun trySetFilterOption(key: String, value: String) {
+        try {
+            Archive.writeSetFilterOption(
+                archive, null, key.toByteArray(), value.toByteArray()
+            )
+        } catch (_: ArchiveException) {
         }
     }
 
@@ -133,21 +178,35 @@ class WriteArchive @Throws(ArchiveException::class) constructor(
     }
 
     private inner class DataOutputStream : OutputStream() {
-        private val oneByteBuffer = ByteBuffer.allocateDirect(1)
+        private val directBuffer = ByteBuffer.allocateDirect(IO_BUFFER_SIZE)
 
         @Throws(IOException::class)
         override fun write(b: Int) {
-            oneByteBuffer.clear()
-            oneByteBuffer.put(b.toByte())
-            Archive.writeData(archive, oneByteBuffer)
+            directBuffer.clear()
+            directBuffer.put(b.toByte())
+            directBuffer.flip()
+            Archive.writeData(archive, directBuffer)
         }
 
         @Throws(IOException::class)
         override fun write(b: ByteArray, off: Int, len: Int) {
-            val buffer = ByteBuffer.wrap(b, off, len)
-            while (buffer.hasRemaining()) {
-                Archive.writeData(archive, buffer)
+            var remaining = len
+            var offset = off
+            while (remaining > 0) {
+                val chunk = min(remaining, directBuffer.capacity())
+                directBuffer.clear()
+                directBuffer.put(b, offset, chunk)
+                directBuffer.flip()
+                while (directBuffer.hasRemaining()) {
+                    Archive.writeData(archive, directBuffer)
+                }
+                offset += chunk
+                remaining -= chunk
             }
         }
+    }
+
+    companion object {
+        private const val IO_BUFFER_SIZE = 64 * 1024
     }
 }

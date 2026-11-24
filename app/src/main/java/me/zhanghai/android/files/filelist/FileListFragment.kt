@@ -79,6 +79,8 @@ import me.zhanghai.android.files.navigation.BookmarkDirectories
 import me.zhanghai.android.files.navigation.BookmarkDirectory
 import me.zhanghai.android.files.navigation.NavigationFragment
 import me.zhanghai.android.files.navigation.NavigationRootMapLiveData
+import me.zhanghai.android.files.provider.archive.archiver.ArchiveCompressionLevel
+import me.zhanghai.android.files.provider.archive.archiver.SevenZCompressionMethod
 import me.zhanghai.android.files.provider.archive.createArchiveRootPath
 import me.zhanghai.android.files.provider.archive.isArchivePath
 import me.zhanghai.android.files.provider.linux.isLinuxPath
@@ -580,6 +582,7 @@ class FileListFragment : Fragment(), BreadcrumbLayout.Listener, FileListAdapter.
     private fun onCurrentPathChanged(path: Path) {
         updateOverlayToolbar()
         updateBottomToolbar()
+        binding.speedDialView.isVisible = !(path.isArchivePath && path.fileSystem.isReadOnly)
     }
 
     private fun onSearchViewExpandedChanged(expanded: Boolean) {
@@ -1006,11 +1009,14 @@ class FileListFragment : Fragment(), BreadcrumbLayout.Listener, FileListAdapter.
         name: String,
         format: Int,
         filter: Int,
-        password: String?
+        password: String?,
+        compressionLevel: ArchiveCompressionLevel,
+        sevenZMethod: SevenZCompressionMethod
     ) {
         val archiveFile = viewModel.currentPath.resolve(name)
         FileJobService.archive(
-            makePathListForJob(files), archiveFile, format, filter, password, requireContext()
+            makePathListForJob(files), archiveFile, format, filter, password, compressionLevel,
+            sevenZMethod, requireContext()
         )
         viewModel.selectFiles(files, false)
     }
@@ -1260,29 +1266,27 @@ class FileListFragment : Fragment(), BreadcrumbLayout.Listener, FileListAdapter.
     private fun openFileWithIntent(file: FileItem, withChooser: Boolean) {
         val path = file.path
         val mimeType = file.mimeType
-        if (path.isArchivePath) {
-            FileJobService.open(path, mimeType, withChooser, requireContext())
-        } else {
-            val intent = path.fileProviderUri.createViewIntent(mimeType)
-                .addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-                .apply {
-                    extraPath = path
-                    maybeAddImageViewerActivityExtras(this, path, mimeType)
+        val intent = path.fileProviderUri.createViewIntent(mimeType)
+            .apply {
+                if (!path.fileSystem.isReadOnly) {
+                    addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
                 }
-                .let {
-                    if (withChooser) {
-                        it.withChooser(
-                            EditFileActivity::class.createIntent()
-                                .putArgs(EditFileActivity.Args(path, mimeType)),
-                            OpenFileAsDialogActivity::class.createIntent()
-                                .putArgs(OpenFileAsDialogFragment.Args(path))
-                        )
-                    } else {
-                        it
-                    }
+                extraPath = path
+                maybeAddImageViewerActivityExtras(this, path, mimeType)
+            }
+            .let {
+                if (withChooser) {
+                    it.withChooser(
+                        EditFileActivity::class.createIntent()
+                            .putArgs(EditFileActivity.Args(path, mimeType)),
+                        OpenFileAsDialogActivity::class.createIntent()
+                            .putArgs(OpenFileAsDialogFragment.Args(path))
+                    )
+                } else {
+                    it
                 }
-            startActivitySafe(intent)
-        }
+            }
+        startActivitySafe(intent)
     }
 
     private fun maybeAddImageViewerActivityExtras(intent: Intent, path: Path, mimeType: MimeType) {

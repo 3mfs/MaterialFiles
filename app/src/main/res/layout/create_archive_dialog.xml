@@ -67,12 +67,48 @@
             </me.zhanghai.android.files.filelist.CreateArchiveTypeRadioGroup>
 
             <com.google.android.material.textfield.TextInputLayout
-                android:id="@+id/passwordLayout"
+                android:id="@+id/sevenZMethodLayout"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginStart="?dialogPreferredPadding"
                 android:layout_marginEnd="?dialogPreferredPadding"
                 android:layout_marginTop="4dp"
+                android:hint="@string/file_create_archive_seven_z_method"
+                app:expandedHintEnabled="false"
+                style="?textInputOutlinedExposedDropdownMenuStyle">
+
+                <AutoCompleteTextView
+                    android:id="@+id/sevenZMethodEdit"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="none" />
+            </com.google.android.material.textfield.TextInputLayout>
+
+            <com.google.android.material.textfield.TextInputLayout
+                android:id="@+id/compressionLevelLayout"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="?dialogPreferredPadding"
+                android:layout_marginEnd="?dialogPreferredPadding"
+                android:layout_marginTop="8dp"
+                android:hint="@string/file_create_archive_compression_level"
+                app:expandedHintEnabled="false"
+                style="?textInputOutlinedExposedDropdownMenuStyle">
+
+                <AutoCompleteTextView
+                    android:id="@+id/compressionLevelEdit"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="none" />
+            </com.google.android.material.textfield.TextInputLayout>
+
+            <com.google.android.material.textfield.TextInputLayout
+                android:id="@+id/passwordLayout"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="?dialogPreferredPadding"
+                android:layout_marginEnd="?dialogPreferredPadding"
+                android:layout_marginTop="8dp"
                 android:hint="@string/file_create_archive_password"
                 app:passwordToggleEnabled="true">
 

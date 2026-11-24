@@ -143,6 +143,12 @@ class ImageViewerFragment : Fragment(), ConfirmDeleteDialogFragment.Listener {
         inflater.inflate(R.menu.image_viewer, menu)
     }
 
+    override fun onPrepareOptionsMenu(menu: Menu) {
+        super.onPrepareOptionsMenu(menu)
+
+        menu.findItem(R.id.action_delete).isVisible = !currentPath.fileSystem.isReadOnly
+    }
+
     override fun onOptionsItemSelected(item: MenuItem): Boolean =
         when (item.itemId) {
             R.id.action_delete -> {

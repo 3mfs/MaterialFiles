@@ -37,7 +37,7 @@ class ReadArchive : Closeable {
             Archive.readSupportFilterAll(archive)
             Archive.readSupportFormatAll(archive)
             Archive.readSetCallbackData(archive, null)
-            val buffer = ByteBuffer.allocate(DEFAULT_BUFFER_SIZE)
+            val buffer = ByteBuffer.allocate(IO_BUFFER_SIZE)
             Archive.readSetReadCallback<Any?>(archive) { _, _ ->
                 buffer.clear()
                 val bytesRead = try {
@@ -79,7 +79,7 @@ class ReadArchive : Closeable {
             Archive.readSupportFilterAll(archive)
             Archive.readSupportFormatAll(archive)
             Archive.readSetCallbackData(archive, null)
-            val buffer = ByteBuffer.allocateDirect(DEFAULT_BUFFER_SIZE)
+            val buffer = ByteBuffer.allocateDirect(IO_BUFFER_SIZE)
             Archive.readSetReadCallback<Any?>(archive) { _, _ ->
                 buffer.clear()
                 val bytesRead = try {
@@ -249,5 +249,9 @@ class ReadArchive : Closeable {
             Archive.readData(archive, buffer)
             buffer.flip()
         }
+    }
+
+    companion object {
+        private const val IO_BUFFER_SIZE = 64 * 1024
     }
 }
