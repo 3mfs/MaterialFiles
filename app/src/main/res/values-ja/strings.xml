@@ -1,13 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 
-<!--
-  ~ Copyright (c) 2018 Hai Zhang <dreaming.in.code.zh@gmail.com>
-  ~ All Rights Reserved.
-  -->
-
 <resources>
 
-    <string name="app_name">Material Files</string>
+    <string name="app_name">Mox Files</string>
 
     <string name="close">閉じる</string>
     <string name="copy">コピー</string>
@@ -639,7 +634,7 @@
     <string name="about_licenses_title">ライセンス</string>
     <string name="about_privacy_policy_title">プライバシーポリシー</string>
     <string name="about_author_title">開発者</string>
-    <string name="about_author_name_title">張海</string>
+    <string name="about_author_name_title">Mox Apps</string>
     <string name="about_author_github_title">GitHub でフォロー</string>
     <string name="about_author_twitter_title">Twitter でフォロー</string>
 </resources>

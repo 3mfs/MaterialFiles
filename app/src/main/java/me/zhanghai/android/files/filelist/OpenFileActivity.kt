@@ -1,8 +1,3 @@
-/*
- * Copyright (c) 2019 Hai Zhang <dreaming.in.code.zh@gmail.com>
- * All Rights Reserved.
- */
-
 package me.zhanghai.android.files.filelist
 
 import android.content.Intent
@@ -42,7 +37,7 @@ class OpenFileActivity : AppActivity() {
     }
 
     companion object {
-        private const val ACTION_OPEN_FILE = "me.zhanghai.android.files.intent.action.OPEN_FILE"
+        private const val ACTION_OPEN_FILE = "com.moxapps.files.intent.action.OPEN_FILE"
 
         fun createIntent(path: Path, mimeType: MimeType): Intent =
             Intent(ACTION_OPEN_FILE)

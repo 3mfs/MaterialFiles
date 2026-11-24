@@ -289,6 +289,28 @@ object Syscall {
     @Throws(SyscallException::class)
     external fun utimens(path: ByteString, @Size(2) times: Array<StructTimespec>)
 
+    external fun nativeDeflateFileToBuffer(
+        path: ByteString,
+        level: Int,
+        outCrcAndSize: LongArray
+    ): ByteArray?
+
+    external fun nativeDeflateBlock(
+        inArr: ByteArray,
+        inLen: Int,
+        level: Int,
+        isLast: Boolean,
+        outCrc: LongArray
+    ): ByteArray?
+
+    external fun nativeLzma2CompressBlock(
+        inArr: ByteArray,
+        inLen: Int,
+        level: Int,
+        dictSize: Int,
+        outProp: ByteArray?
+    ): ByteArray?
+
     @Throws(InterruptedIOException::class, SyscallException::class)
     fun write(
         fd: FileDescriptor,

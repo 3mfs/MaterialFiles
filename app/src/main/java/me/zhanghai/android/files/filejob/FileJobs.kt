@@ -1,8 +1,3 @@
-/*
- * Copyright (c) 2019 Hai Zhang <dreaming.in.code.zh@gmail.com>
- * All Rights Reserved.
- */
-
 package me.zhanghai.android.files.filejob
 
 import android.app.PendingIntent
@@ -165,6 +160,8 @@ private fun FileJob.postNotification(
 
 private const val PROGRESS_INTERVAL_MILLIS = 200L
 
+private const val UI_PROGRESS_INTERVAL_MILLIS = 100L
+
 private const val NOTIFICATION_INTERVAL_MILLIS = 500L
 
 private fun FileJob.showToast(textRes: Int, duration: Int = Toast.LENGTH_SHORT) {
@@ -313,14 +310,35 @@ private fun FileJob.scanPath(
     postScanNotification(scanInfo, notificationTitleRes)
 }
 
-private fun FileJob.postScanNotification(scanInfo: ScanInfo, @PluralsRes titleRes: Int) {
-    if (!scanInfo.shouldPostNotification()) {
+private fun FileJob.postScanNotification(
+    scanInfo: ScanInfo,
+    @PluralsRes titleRes: Int,
+    currentPath: Path? = null
+) {
+    val shouldNotify = scanInfo.shouldPostNotification()
+    val shouldUi = shouldNotify || scanInfo.shouldUpdateUi()
+    if (!shouldNotify && !shouldUi) {
         return
     }
     val size = scanInfo.size.asFileSize().formatHumanReadable(service)
     val fileCount: Int = scanInfo.fileCount
     val title: String = getQuantityString(titleRes, fileCount, fileCount, size)
-    postNotification(title, null, null, null, 0, 0, true, true)
+    if (shouldUi) {
+        FileJobProgressTracker.update(
+            FileJobProgress(
+                jobId = id,
+                title = title,
+                text = null,
+                currentFile = currentPath?.let { getFileName(it) },
+                max = 0,
+                progress = 0,
+                indeterminate = true
+            )
+        )
+    }
+    if (shouldNotify) {
+        postNotification(title, null, null, null, 0, 0, true, true)
+    }
 }
 
 private class ScanInfo {
@@ -330,6 +348,7 @@ private class ScanInfo {
         private set
 
     private var lastNotificationTimeMillis = 0L
+    private var lastUiUpdateTimeMillis = 0L
 
     fun incrementFileCount() {
         ++fileCount
@@ -349,6 +368,17 @@ private class ScanInfo {
             false
         }
     }
+
+    fun shouldUpdateUi(): Boolean {
+        val currentTimeMillis = System.currentTimeMillis()
+        return if (fileCount % 100 == 0
+            || lastUiUpdateTimeMillis + UI_PROGRESS_INTERVAL_MILLIS < currentTimeMillis) {
+            lastUiUpdateTimeMillis = currentTimeMillis
+            true
+        } else {
+            false
+        }
+    }
 }
 
 private fun FileJob.postTransferSizeNotification(
@@ -357,31 +387,36 @@ private fun FileJob.postTransferSizeNotification(
     @StringRes titleOneRes: Int,
     @PluralsRes titleMultipleRes: Int
 ) {
-    if (!transferInfo.shouldPostNotification()) {
+    val shouldNotify = transferInfo.shouldPostNotification()
+    val shouldUi = shouldNotify || transferInfo.shouldUpdateUi()
+    if (!shouldNotify && !shouldUi) {
         return
     }
     val title: String
-    val text: String
+    val notificationText: String
+    val dialogText: String
     val fileCount = transferInfo.fileCount
     val target = transferInfo.target!!
     val size = transferInfo.size
     val transferredSize = transferInfo.transferredSize
+    val sizeString = size.asFileSize().formatHumanReadable(service)
+    val transferredSizeString = transferredSize.asFileSize().formatHumanReadable(service)
     if (fileCount == 1) {
         title = getString(titleOneRes, getFileName(currentSource), getFileName(target))
-        val sizeString = size.asFileSize().formatHumanReadable(service)
-        val transferredSizeString = transferredSize.asFileSize().formatHumanReadable(service)
-        text = getString(
+        notificationText = getString(
             R.string.file_job_transfer_size_notification_text_one_format, transferredSizeString,
             sizeString
         )
+        dialogText = notificationText
     } else {
         title = getQuantityString(titleMultipleRes, fileCount, fileCount, getFileName(target))
         val currentFileIndex = (transferInfo.transferredFileCount + 1)
             .coerceAtMost(fileCount)
-        text = getString(
+        notificationText = getString(
             R.string.file_job_transfer_size_notification_text_multiple_format, currentFileIndex,
             fileCount
         )
+        dialogText = "$notificationText • $transferredSizeString / $sizeString"
     }
     val max: Int
     val progress: Int
@@ -398,7 +433,22 @@ private fun FileJob.postTransferSizeNotification(
         max = maxLong.toInt()
         progress = progressLong.toInt()
     }
-    postNotification(title, text, null, null, max, progress, false, true)
+    if (shouldUi) {
+        FileJobProgressTracker.update(
+            FileJobProgress(
+                jobId = id,
+                title = title,
+                text = dialogText,
+                currentFile = getFileName(currentSource),
+                max = max,
+                progress = progress,
+                indeterminate = false
+            )
+        )
+    }
+    if (shouldNotify) {
+        postNotification(title, notificationText, null, null, max, progress, false, true)
+    }
 }
 
 private fun FileJob.postTransferCountNotification(
@@ -448,6 +498,7 @@ private class TransferInfo(scanInfo: ScanInfo, val target: Path?) {
         private set
 
     private var lastNotificationTimeMillis = 0L
+    private var lastUiUpdateTimeMillis = 0L
 
     fun incrementTransferredFileCount() {
         ++transferredFileCount
@@ -487,6 +538,16 @@ private class TransferInfo(scanInfo: ScanInfo, val target: Path?) {
         val currentTimeMillis = System.currentTimeMillis()
         return if (lastNotificationTimeMillis + NOTIFICATION_INTERVAL_MILLIS < currentTimeMillis) {
             lastNotificationTimeMillis = currentTimeMillis
+            true
+        } else {
+            false
+        }
+    }
+
+    fun shouldUpdateUi(): Boolean {
+        val currentTimeMillis = System.currentTimeMillis()
+        return if (lastUiUpdateTimeMillis + UI_PROGRESS_INTERVAL_MILLIS < currentTimeMillis) {
+            lastUiUpdateTimeMillis = currentTimeMillis
             true
         } else {
             false
@@ -633,7 +694,54 @@ class ArchiveFileJob(
 ) : FileJob() {
     @Throws(IOException::class)
     override fun run() {
-        val scanInfo = scan(sources, R.plurals.file_job_archive_scan_notification_title_format)
+        val scanInfo = ScanInfo()
+        val items = mutableListOf<ScannedArchiveItem>()
+        for (source in sources) {
+            val target = getTargetFileName(source)
+            Files.walkFileTree(source, object : SimpleFileVisitor<Path>() {
+                @Throws(IOException::class)
+                override fun preVisitDirectory(
+                    directory: Path,
+                    attributes: BasicFileAttributes
+                ): FileVisitResult {
+                    val directoryInTarget = target.resolveForeign(source.relativize(directory))
+                    items += ScannedArchiveItem(directory, directoryInTarget, attributes)
+                    scanInfo.incrementFileCount()
+                    scanInfo.addToSize(attributes.size())
+                    postScanNotification(
+                        scanInfo, R.plurals.file_job_archive_scan_notification_title_format,
+                        directory
+                    )
+                    throwIfInterrupted()
+                    return FileVisitResult.CONTINUE
+                }
+
+                @Throws(IOException::class)
+                override fun visitFile(
+                    file: Path,
+                    attributes: BasicFileAttributes
+                ): FileVisitResult {
+                    val fileInTarget = target.resolveForeign(source.relativize(file))
+                    items += ScannedArchiveItem(file, fileInTarget, attributes)
+                    scanInfo.incrementFileCount()
+                    scanInfo.addToSize(attributes.size())
+                    postScanNotification(
+                        scanInfo, R.plurals.file_job_archive_scan_notification_title_format, file
+                    )
+                    throwIfInterrupted()
+                    return FileVisitResult.CONTINUE
+                }
+
+                @Throws(IOException::class)
+                override fun visitFileFailed(file: Path, exception: IOException): FileVisitResult {
+                    // TODO: Prompt retry, skip, skip-all or abort.
+                    return super.visitFileFailed(file, exception)
+                }
+            })
+            throwIfInterrupted()
+        }
+        postScanNotification(scanInfo, R.plurals.file_job_archive_scan_notification_title_format)
+
         val channel = archiveFile.newByteChannel(
             StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE
         )
@@ -644,9 +752,11 @@ class ArchiveFileJob(
                     channel, format, filter, password, compressionLevel, sevenZMethod
                 ).use { writer ->
                     val transferInfo = TransferInfo(scanInfo, archiveFile)
-                    for (source in sources) {
-                        val target = getTargetFileName(source)
-                        archiveRecursively(source, writer, target, transferInfo)
+                    for (item in items) {
+                        archive(
+                            item.file, item.attributes, writer, item.entryName, archiveFile,
+                            transferInfo
+                        )
                         throwIfInterrupted()
                     }
                 }
@@ -665,45 +775,17 @@ class ArchiveFileJob(
         }
     }
 
-    @Throws(IOException::class)
-    private fun archiveRecursively(
-        source: Path,
-        writer: ArchiveWriter,
-        target: Path,
-        transferInfo: TransferInfo
-    ) {
-        Files.walkFileTree(source, object : SimpleFileVisitor<Path>() {
-            @Throws(IOException::class)
-            override fun preVisitDirectory(
-                directory: Path,
-                attributes: BasicFileAttributes
-            ): FileVisitResult {
-                val directoryInTarget = target.resolveForeign(source.relativize(directory))
-                archive(directory, writer, directoryInTarget, archiveFile, transferInfo)
-                throwIfInterrupted()
-                return FileVisitResult.CONTINUE
-            }
-
-            @Throws(IOException::class)
-            override fun visitFile(file: Path, attributes: BasicFileAttributes): FileVisitResult {
-                val fileInTarget = target.resolveForeign(source.relativize(file))
-                archive(file, writer, fileInTarget, archiveFile, transferInfo)
-                throwIfInterrupted()
-                return FileVisitResult.CONTINUE
-            }
-
-            @Throws(IOException::class)
-            override fun visitFileFailed(file: Path, exception: IOException): FileVisitResult {
-                // TODO: Prompt retry, skip, skip-all or abort.
-                return super.visitFileFailed(file, exception)
-            }
-        })
-    }
+    private class ScannedArchiveItem(
+        val file: Path,
+        val entryName: Path,
+        val attributes: BasicFileAttributes
+    )
 }
 
 @Throws(IOException::class)
 private fun FileJob.archive(
     file: Path,
+    attributes: BasicFileAttributes,
     writer: ArchiveWriter,
     entryName: Path,
     archiveFile: Path,
@@ -711,10 +793,10 @@ private fun FileJob.archive(
 ) {
     try {
         postArchiveNotification(transferInfo, file)
-        writer.write(file, entryName, PROGRESS_INTERVAL_MILLIS) {
+        writer.write(file, entryName, PROGRESS_INTERVAL_MILLIS, {
             transferInfo.addToTransferredSize(it)
             postArchiveNotification(transferInfo, file)
-        }
+        }, attributes)
         transferInfo.incrementTransferredFileCount()
         postArchiveNotification(transferInfo, file)
     } catch (e: InterruptedIOException) {
@@ -1240,7 +1322,8 @@ private fun FileJob.insertIntoZipBatch(
                     progressListener = {
                         transferInfo.addToTransferredSize(it)
                         postCopyMoveNotification(transferInfo, file, type)
-                    }
+                    },
+                    attributes = attributes
                 )
                 transferInfo.incrementTransferredFileCount()
                 postCopyMoveNotification(transferInfo, file, type)

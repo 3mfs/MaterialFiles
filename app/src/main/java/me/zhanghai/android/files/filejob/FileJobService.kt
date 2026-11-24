@@ -1,8 +1,3 @@
-/*
- * Copyright (c) 2019 Hai Zhang <dreaming.in.code.zh@gmail.com>
- * All Rights Reserved.
- */
-
 package me.zhanghai.android.files.filejob
 
 import android.app.Service
@@ -123,13 +118,12 @@ class FileJobService : Service() {
             compressionLevel: ArchiveCompressionLevel = ArchiveCompressionLevel.NORMAL,
             sevenZMethod: SevenZCompressionMethod = SevenZCompressionMethod.LZMA2,
             context: Context
-        ) {
-            startJob(
-                ArchiveFileJob(
-                    sources, archiveFile, format, filter, password, compressionLevel, sevenZMethod
-                ),
-                context
+        ): Int {
+            val job = ArchiveFileJob(
+                sources, archiveFile, format, filter, password, compressionLevel, sevenZMethod
             )
+            startJob(job, context)
+            return job.id
         }
 
         fun copy(sources: List<Path>, targetDirectory: Path, context: Context) {

@@ -12,8 +12,12 @@ import java8.nio.file.attribute.FileTime
 import me.zhanghai.android.files.provider.archive.archiver.ArchiveCompressionLevel
 import me.zhanghai.android.files.provider.common.PosixFileModeBit
 import me.zhanghai.android.files.provider.common.PosixFileType
+import me.zhanghai.android.files.provider.common.asByteStringListPath
 import me.zhanghai.android.files.provider.common.newInputStream
 import me.zhanghai.android.files.provider.common.toInt
+import me.zhanghai.android.files.provider.linux.isLinuxPath
+import me.zhanghai.android.files.provider.linux.syscall.Syscall
+import me.zhanghai.android.files.provider.root.isRunningAsRoot
 import java.io.ByteArrayOutputStream
 import java.io.Closeable
 import java.io.IOException
@@ -32,16 +36,15 @@ import java.util.concurrent.ExecutionException
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
+import java.util.concurrent.TimeUnit
 import java.util.zip.CRC32
 import java.util.zip.Deflater
 import java.util.zip.ZipEntry
 import kotlin.math.min
 
 /**
- * Pure-JVM high-throughput ZIP writer operating on java8.nio.channels.SeekableByteChannel.
- * Supports compression levels (Store/Fast/Normal/Maximum), WinZip AE-2 AES-256, ZIP64,
- * parallel DEFLATE compression, Deflater pooling, in-buffer LFH patching, and raw-entry
- * pass-through for zero-recompression in-place editing.
+ * High-throughput multi-threaded ZIP writer backed by native zlib (via JNI) with buffered
+ * sequential I/O, zero-stall directory/symlink queueing, and in-buffer Local File Header patching.
  */
 internal class FastZipWriter(
     private val channel: SeekableByteChannel,
@@ -59,6 +62,7 @@ internal class FastZipWriter(
     private val workerCount = Runtime.getRuntime().availableProcessors().coerceIn(2, 8)
     private val executor: ExecutorService = Executors.newFixedThreadPool(workerCount)
     private val deflaterPool = ConcurrentLinkedQueue<Deflater>()
+    private val blockBufferPool = ConcurrentLinkedQueue<ByteArray>()
     private val pendingEntries = ArrayDeque<PendingEntry>()
     private var pendingBytes = 0L
 
@@ -68,8 +72,26 @@ internal class FastZipWriter(
         lastModifiedTime: FileTime?,
         mode: Set<PosixFileModeBit>
     ) {
-        drainAllPendingEntries()
         val normalized = normalizeDirName(entryName)
+        if (pendingEntries.isNotEmpty()) {
+            val prepared = PreparedEntry(
+                nameBytes = normalized.toByteArray(StandardCharsets.UTF_8),
+                isDirectory = true,
+                isSymbolicLink = false,
+                lastModifiedTime = lastModifiedTime,
+                mode = mode,
+                uncompressedSize = 0L,
+                compressedSize = 0L,
+                crc32 = 0L,
+                salt = null,
+                verifier = null,
+                payloadBytes = EMPTY_BYTES,
+                payloadLen = 0,
+                authCode = null
+            )
+            pendingEntries.addLast(PendingEntry(CompletedFuture(prepared), 0L, null))
+            return
+        }
         writeStreamEntry(
             name = normalized,
             isDirectory = true,
@@ -90,8 +112,31 @@ internal class FastZipWriter(
         lastModifiedTime: FileTime?,
         mode: Set<PosixFileModeBit>
     ) {
-        drainAllPendingEntries()
         val bytes = target.toByteArray(StandardCharsets.UTF_8)
+        if (pendingEntries.isNotEmpty()) {
+            val cleanName = entryName.trimStart('/')
+            val useAes = password != null
+            val actualMethod = if (compressionLevel == ArchiveCompressionLevel.STORE) {
+                ZipEntry.STORED
+            } else {
+                ZipEntry.DEFLATED
+            }
+            val future = executor.submit(Callable {
+                prepareEntryFromBytes(
+                    name = cleanName,
+                    isSymbolicLink = true,
+                    lastModifiedTime = lastModifiedTime,
+                    mode = mode,
+                    rawBytes = bytes,
+                    rawLen = bytes.size,
+                    useAes = useAes,
+                    actualMethod = actualMethod
+                )
+            })
+            pendingEntries.addLast(PendingEntry(future, bytes.size.toLong(), null))
+            pendingBytes += bytes.size
+            return
+        }
         bytes.inputStream().use { input ->
             writeStreamEntry(
                 name = entryName.trimStart('/'),
@@ -145,7 +190,7 @@ internal class FastZipWriter(
             drainOnePendingEntry()
         }
         if (uncompressedSizeHint in 1..PARALLEL_ENTRY_MAX_SIZE) {
-            while (pendingEntries.size >= workerCount * 3 || pendingBytes >= MAX_PENDING_BYTES) {
+            while (pendingEntries.size >= workerCount * 4 || pendingBytes >= MAX_PENDING_BYTES) {
                 drainOnePendingEntry()
             }
             val cleanName = entryName.trimStart('/')
@@ -196,6 +241,56 @@ internal class FastZipWriter(
         useAes: Boolean,
         actualMethod: Int
     ): PreparedEntry {
+        if (sourcePath.isLinuxPath && !isRunningAsRoot) {
+            val nativeLevel = if (actualMethod == ZipEntry.STORED) 0 else compressionLevel.zipLevel
+            val crcAndSize = LongArray(2)
+            val nativeBytes = Syscall.nativeDeflateFileToBuffer(
+                sourcePath.asByteStringListPath().toByteString(),
+                nativeLevel,
+                crcAndSize
+            )
+            if (nativeBytes != null) {
+                val rawLen = crcAndSize[1]
+                val rawCrc = crcAndSize[0] and 0xFFFFFFFFL
+                val nameBytes = name.toByteArray(StandardCharsets.UTF_8)
+                var salt: ByteArray? = null
+                var verifier: ByteArray? = null
+                var authCode: ByteArray? = null
+                var compressedSize = nativeBytes.size.toLong()
+                var finalCrc = rawCrc
+                if (useAes) {
+                    val encryptor = WinZipAes.createEncryptor(password!!, WinZipAes.STRENGTH_256)
+                    try {
+                        salt = encryptor.salt
+                        verifier = encryptor.verifier
+                        if (nativeBytes.isNotEmpty()) {
+                            encryptor.encrypt(nativeBytes, 0, nativeBytes.size)
+                        }
+                        authCode = encryptor.finishAuthCode()
+                        compressedSize += salt.size + verifier.size + authCode.size
+                        finalCrc = 0L
+                    } finally {
+                        encryptor.close()
+                    }
+                }
+                return PreparedEntry(
+                    nameBytes = nameBytes,
+                    isDirectory = false,
+                    isSymbolicLink = false,
+                    lastModifiedTime = lastModifiedTime,
+                    mode = mode,
+                    uncompressedSize = rawLen,
+                    compressedSize = compressedSize,
+                    crc32 = finalCrc,
+                    salt = salt,
+                    verifier = verifier,
+                    payloadBytes = nativeBytes,
+                    payloadLen = nativeBytes.size,
+                    authCode = authCode
+                )
+            }
+        }
+
         val rawBytes: ByteArray
         val rawLen: Int
         sourcePath.newInputStream(LinkOption.NOFOLLOW_LINKS).use { input ->
@@ -214,7 +309,28 @@ internal class FastZipWriter(
             rawBytes = buf
             rawLen = pos
         }
+        return prepareEntryFromBytes(
+            name = name,
+            isSymbolicLink = false,
+            lastModifiedTime = lastModifiedTime,
+            mode = mode,
+            rawBytes = rawBytes,
+            rawLen = rawLen,
+            useAes = useAes,
+            actualMethod = actualMethod
+        )
+    }
 
+    private fun prepareEntryFromBytes(
+        name: String,
+        isSymbolicLink: Boolean,
+        lastModifiedTime: FileTime?,
+        mode: Set<PosixFileModeBit>,
+        rawBytes: ByteArray,
+        rawLen: Int,
+        useAes: Boolean,
+        actualMethod: Int
+    ): PreparedEntry {
         val nameBytes = name.toByteArray(StandardCharsets.UTF_8)
         var crcValue = 0L
         if (!useAes) {
@@ -229,20 +345,32 @@ internal class FastZipWriter(
             payloadBytes = rawBytes
             payloadLen = rawLen
         } else {
-            val deflater = acquireDeflater()
-            try {
-                val outStream = ByteArrayOutputStream(minOf(rawLen, 64 * 1024).coerceAtLeast(256))
-                val deflateBuf = ByteArray(IO_BUFFER_SIZE)
-                deflater.setInput(rawBytes, 0, rawLen)
-                deflater.finish()
-                while (!deflater.finished()) {
-                    val c = deflater.deflate(deflateBuf)
-                    if (c > 0) outStream.write(deflateBuf, 0, c)
+            val outCrc = LongArray(1)
+            val nativeCompressed = Syscall.nativeDeflateBlock(
+                rawBytes, rawLen, compressionLevel.zipLevel, true, outCrc
+            )
+            if (nativeCompressed != null) {
+                payloadBytes = nativeCompressed
+                payloadLen = nativeCompressed.size
+                if (!useAes) {
+                    crcValue = outCrc[0] and 0xFFFFFFFFL
                 }
-                payloadBytes = outStream.toByteArray()
-                payloadLen = payloadBytes.size
-            } finally {
-                releaseDeflater(deflater)
+            } else {
+                val deflater = acquireDeflater()
+                try {
+                    val outStream = ByteArrayOutputStream(minOf(rawLen, 64 * 1024).coerceAtLeast(256))
+                    val deflateBuf = ByteArray(IO_BUFFER_SIZE)
+                    deflater.setInput(rawBytes, 0, rawLen)
+                    deflater.finish()
+                    while (!deflater.finished()) {
+                        val c = deflater.deflate(deflateBuf)
+                        if (c > 0) outStream.write(deflateBuf, 0, c)
+                    }
+                    payloadBytes = outStream.toByteArray()
+                    payloadLen = payloadBytes.size
+                } finally {
+                    releaseDeflater(deflater)
+                }
             }
         }
 
@@ -267,6 +395,8 @@ internal class FastZipWriter(
 
         return PreparedEntry(
             nameBytes = nameBytes,
+            isDirectory = false,
+            isSymbolicLink = isSymbolicLink,
             lastModifiedTime = lastModifiedTime,
             mode = mode,
             uncompressedSize = rawLen.toLong(),
@@ -317,7 +447,7 @@ internal class FastZipWriter(
     @Throws(IOException::class)
     private fun writePreparedEntry(prepared: PreparedEntry) {
         val useAes = prepared.salt != null
-        val actualMethod = if (compressionLevel == ArchiveCompressionLevel.STORE) {
+        val actualMethod = if (prepared.isDirectory || compressionLevel == ArchiveCompressionLevel.STORE) {
             ZipEntry.STORED
         } else {
             ZipEntry.DEFLATED
@@ -326,8 +456,13 @@ internal class FastZipWriter(
         val gpbf = GPBF_UTF8 or (if (useAes) GPBF_ENCRYPTED else 0)
         val (dosTime, dosDate) = toDosTimeDate(prepared.lastModifiedTime)
         val mtimeSeconds = prepared.lastModifiedTime?.toInstant()?.epochSecond
-        val fullMode = PosixFileType.REGULAR_FILE.mode or prepared.mode.toInt()
-        val extAttr = fullMode shl 16
+        val posixType = when {
+            prepared.isDirectory -> PosixFileType.DIRECTORY
+            prepared.isSymbolicLink -> PosixFileType.SYMBOLIC_LINK
+            else -> PosixFileType.REGULAR_FILE
+        }
+        val fullMode = posixType.mode or prepared.mode.toInt()
+        val extAttr = (fullMode shl 16) or (if (prepared.isDirectory) 0x10 else 0)
         val versionMadeBy = (MADE_BY_UNIX shl 8) or 45
 
         val needsZip64Sizes = prepared.uncompressedSize >= ZIP64_MAGIC_SIZE ||
@@ -435,7 +570,6 @@ internal class FastZipWriter(
         val localHeaderOffset = currentPosition
         val versionNeeded = if (needsZip64Placeholder || useAes) 51 else 20
 
-        // Write Local File Header with 0 sizes/crc placeholders; we'll patch in-buffer or seek if needed.
         val lfh = ByteBuffer.allocate(30 + nameBytes.size + localExtra.size).order(ByteOrder.LITTLE_ENDIAN)
         lfh.putInt(SIG_LOCAL_FILE_HEADER)
         lfh.putShort(versionNeeded.toShort())
@@ -506,25 +640,28 @@ internal class FastZipWriter(
                         }
                     }
                 } else if (uncompressedSizeHint > PARALLEL_BLOCK_SIZE || uncompressedSizeHint < 0L) {
-                    val blockQueue = ArrayDeque<Pair<Future<ByteArray>, Long>>()
+                    val blockQueue = ArrayDeque<Future<CompressedBlock>>()
                     fun drainOneBlock() {
-                        val (future, blockUncomp) = blockQueue.removeFirst()
-                        val compressed = try {
+                        val future = blockQueue.removeFirst()
+                        val block = try {
                             future.get()
                         } catch (e: InterruptedException) {
-                            while (blockQueue.isNotEmpty()) blockQueue.removeFirst().first.cancel(true)
+                            while (blockQueue.isNotEmpty()) blockQueue.removeFirst().cancel(true)
                             Thread.currentThread().interrupt()
                             throw InterruptedIOException().apply { initCause(e) }
                         } catch (e: ExecutionException) {
-                            while (blockQueue.isNotEmpty()) blockQueue.removeFirst().first.cancel(true)
+                            while (blockQueue.isNotEmpty()) blockQueue.removeFirst().cancel(true)
                             val cause = e.cause
                             if (cause is IOException) throw cause
                             throw IOException(cause)
                         }
-                        if (compressed.isNotEmpty()) {
-                            payloadOut.write(compressed, 0, compressed.size)
+                        if (block.compressed.isNotEmpty()) {
+                            payloadOut.write(block.compressed, 0, block.compressed.size)
                         }
-                        progressAcc += blockUncomp
+                        if (!useAes) {
+                            crcValue = crc32Combine(crcValue, block.crc32, block.uncompressedLen)
+                        }
+                        progressAcc += block.uncompressedLen
                         val now = System.currentTimeMillis()
                         if (listener != null && now >= lastProgressMillis + intervalMillis) {
                             listener(progressAcc)
@@ -533,53 +670,52 @@ internal class FastZipWriter(
                         }
                     }
 
-                    var carryByte = -1
-                    var submittedAny = false
-                    while (true) {
-                        val chunk = ByteArray(PARALLEL_BLOCK_SIZE)
-                        var chunkLen = 0
-                        if (carryByte != -1) {
-                            chunk[0] = carryByte.toByte()
-                            chunkLen = 1
-                            carryByte = -1
-                        }
-                        while (chunkLen < PARALLEL_BLOCK_SIZE) {
-                            val n = inputStream.read(chunk, chunkLen, PARALLEL_BLOCK_SIZE - chunkLen)
-                            if (n == -1) break
-                            chunkLen += n
-                        }
-                        if (chunkLen == 0) {
-                            if (!submittedAny) {
-                                blockQueue.addLast(submitDeflateBlock(chunk, 0, isLast = true) to 0L)
+                    var prevChunk: ByteArray? = null
+                    var prevLen = 0
+                    try {
+                        while (true) {
+                            val currChunk = borrowBlockBuffer()
+                            var currLen = 0
+                            while (currLen < PARALLEL_BLOCK_SIZE) {
+                                val n = inputStream.read(currChunk, currLen, PARALLEL_BLOCK_SIZE - currLen)
+                                if (n == -1) break
+                                currLen += n
                             }
-                            break
-                        }
-                        if (Thread.interrupted()) {
-                            while (blockQueue.isNotEmpty()) blockQueue.removeFirst().first.cancel(true)
-                            throw InterruptedIOException()
-                        }
-                        if (!useAes) crc.update(chunk, 0, chunkLen)
-                        uncompressedSize += chunkLen
-                        val isLast = if (chunkLen < PARALLEL_BLOCK_SIZE) {
-                            true
-                        } else {
-                            val next = inputStream.read()
-                            if (next == -1) {
-                                true
-                            } else {
-                                carryByte = next
-                                false
+                            if (Thread.interrupted()) {
+                                releaseBlockBuffer(currChunk)
+                                if (prevChunk != null) releaseBlockBuffer(prevChunk)
+                                while (blockQueue.isNotEmpty()) blockQueue.removeFirst().cancel(true)
+                                throw InterruptedIOException()
                             }
+                            if (currLen == 0) {
+                                releaseBlockBuffer(currChunk)
+                                if (prevChunk != null) {
+                                    uncompressedSize += prevLen
+                                    blockQueue.addLast(submitDeflateBlock(prevChunk, prevLen, isLast = true))
+                                    prevChunk = null
+                                } else {
+                                    val emptyChunk = borrowBlockBuffer()
+                                    blockQueue.addLast(submitDeflateBlock(emptyChunk, 0, isLast = true))
+                                }
+                                break
+                            }
+                            if (prevChunk != null) {
+                                uncompressedSize += prevLen
+                                blockQueue.addLast(submitDeflateBlock(prevChunk, prevLen, isLast = false))
+                                if (blockQueue.size >= workerCount) {
+                                    drainOneBlock()
+                                }
+                            }
+                            prevChunk = currChunk
+                            prevLen = currLen
                         }
-                        submittedAny = true
-                        blockQueue.addLast(submitDeflateBlock(chunk, chunkLen, isLast) to chunkLen.toLong())
-                        if (blockQueue.size >= workerCount) {
+                        while (blockQueue.isNotEmpty()) {
                             drainOneBlock()
                         }
-                        if (isLast) break
-                    }
-                    while (blockQueue.isNotEmpty()) {
-                        drainOneBlock()
+                    } finally {
+                        if (prevChunk != null) {
+                            releaseBlockBuffer(prevChunk)
+                        }
                     }
                 } else {
                     val ioBuf = ByteArray(IO_BUFFER_SIZE)
@@ -613,6 +749,11 @@ internal class FastZipWriter(
                     } finally {
                         releaseDeflater(deflater)
                     }
+                    crcValue = if (useAes) 0L else crc.value
+                }
+
+                if (actualMethod == ZipEntry.STORED) {
+                    crcValue = if (useAes) 0L else crc.value
                 }
                 if (progressAcc > 0) {
                     listener?.invoke(progressAcc)
@@ -621,8 +762,8 @@ internal class FastZipWriter(
                     val authCode = encryptor.finishAuthCode()
                     writeBytes(authCode, 0, authCode.size)
                     compressedSize += authCode.size
+                    crcValue = 0L
                 }
-                crcValue = if (useAes) 0L else crc.value
             } finally {
                 encryptor?.close()
             }
@@ -693,36 +834,66 @@ internal class FastZipWriter(
         )
     }
 
+    private fun borrowBlockBuffer(): ByteArray =
+        blockBufferPool.poll() ?: ByteArray(PARALLEL_BLOCK_SIZE)
+
+    private fun releaseBlockBuffer(buffer: ByteArray) {
+        if (blockBufferPool.size < workerCount + 4) {
+            blockBufferPool.offer(buffer)
+        }
+    }
+
     private fun submitDeflateBlock(
         chunk: ByteArray,
         chunkLen: Int,
         isLast: Boolean
-    ): Future<ByteArray> =
+    ): Future<CompressedBlock> =
         executor.submit(Callable {
-            val deflater = acquireDeflater()
             try {
-                val out = ByteArrayOutputStream(minOf(chunkLen, 128 * 1024).coerceAtLeast(64))
-                val deflateBuf = ByteArray(IO_BUFFER_SIZE)
-                deflater.setInput(chunk, 0, chunkLen)
-                if (isLast) {
-                    deflater.finish()
-                    while (!deflater.finished()) {
-                        val c = deflater.deflate(deflateBuf)
-                        if (c > 0) out.write(deflateBuf, 0, c)
-                    }
-                } else {
-                    while (!deflater.needsInput()) {
-                        val c = deflater.deflate(deflateBuf, 0, deflateBuf.size, Deflater.NO_FLUSH)
-                        if (c > 0) out.write(deflateBuf, 0, c)
-                    }
-                    do {
-                        val c = deflater.deflate(deflateBuf, 0, deflateBuf.size, Deflater.SYNC_FLUSH)
-                        if (c > 0) out.write(deflateBuf, 0, c)
-                    } while (c == deflateBuf.size)
+                val outCrc = LongArray(1)
+                val nativeBytes = Syscall.nativeDeflateBlock(
+                    chunk, chunkLen, compressionLevel.zipLevel, isLast, outCrc
+                )
+                if (nativeBytes != null) {
+                    return@Callable CompressedBlock(
+                        compressed = nativeBytes,
+                        crc32 = outCrc[0] and 0xFFFFFFFFL,
+                        uncompressedLen = chunkLen.toLong()
+                    )
                 }
-                out.toByteArray()
+                val crc = CRC32()
+                if (chunkLen > 0) crc.update(chunk, 0, chunkLen)
+                val deflater = acquireDeflater()
+                try {
+                    val out = ByteArrayOutputStream(minOf(chunkLen, 128 * 1024).coerceAtLeast(64))
+                    val deflateBuf = ByteArray(IO_BUFFER_SIZE)
+                    deflater.setInput(chunk, 0, chunkLen)
+                    if (isLast) {
+                        deflater.finish()
+                        while (!deflater.finished()) {
+                            val c = deflater.deflate(deflateBuf)
+                            if (c > 0) out.write(deflateBuf, 0, c)
+                        }
+                    } else {
+                        while (!deflater.needsInput()) {
+                            val c = deflater.deflate(deflateBuf, 0, deflateBuf.size, Deflater.NO_FLUSH)
+                            if (c > 0) out.write(deflateBuf, 0, c)
+                        }
+                        do {
+                            val c = deflater.deflate(deflateBuf, 0, deflateBuf.size, Deflater.SYNC_FLUSH)
+                            if (c > 0) out.write(deflateBuf, 0, c)
+                        } while (c == deflateBuf.size)
+                    }
+                    CompressedBlock(
+                        compressed = out.toByteArray(),
+                        crc32 = crc.value,
+                        uncompressedLen = chunkLen.toLong()
+                    )
+                } finally {
+                    releaseDeflater(deflater)
+                }
             } finally {
-                releaseDeflater(deflater)
+                releaseBlockBuffer(chunk)
             }
         })
 
@@ -842,6 +1013,7 @@ internal class FastZipWriter(
             flushBuffer()
         } finally {
             cancelPendingEntries()
+            blockBufferPool.clear()
             try {
                 executor.shutdownNow()
             } finally {
@@ -1012,6 +1184,14 @@ internal class FastZipWriter(
         return dosTime to dosDate
     }
 
+    private class CompletedFuture<T>(private val value: T) : Future<T> {
+        override fun cancel(mayInterruptIfRunning: Boolean): Boolean = false
+        override fun isCancelled(): Boolean = false
+        override fun isDone(): Boolean = true
+        override fun get(): T = value
+        override fun get(timeout: Long, unit: TimeUnit): T = value
+    }
+
     private class PendingEntry(
         val future: Future<PreparedEntry>,
         val sizeHint: Long,
@@ -1020,6 +1200,8 @@ internal class FastZipWriter(
 
     private class PreparedEntry(
         val nameBytes: ByteArray,
+        val isDirectory: Boolean,
+        val isSymbolicLink: Boolean,
         val lastModifiedTime: FileTime?,
         val mode: Set<PosixFileModeBit>,
         val uncompressedSize: Long,
@@ -1030,6 +1212,12 @@ internal class FastZipWriter(
         val payloadBytes: ByteArray,
         val payloadLen: Int,
         val authCode: ByteArray?
+    )
+
+    private class CompressedBlock(
+        val compressed: ByteArray,
+        val crc32: Long,
+        val uncompressedLen: Long
     )
 
     private class WrittenEntry(
@@ -1067,9 +1255,60 @@ internal class FastZipWriter(
         private const val ZIP64_MAGIC_SIZE = 0xFFFFFFFFL
         private const val IO_BUFFER_SIZE = 128 * 1024
         private const val WRITE_BUFFER_SIZE = 512 * 1024
-        private const val PARALLEL_ENTRY_MAX_SIZE = 1024 * 1024L
-        private const val MAX_PENDING_BYTES = 16 * 1024 * 1024L
+        private const val PARALLEL_ENTRY_MAX_SIZE = 4 * 1024 * 1024L
+        private const val MAX_PENDING_BYTES = 32 * 1024 * 1024L
         private const val PARALLEL_BLOCK_SIZE = 1024 * 1024
         private val EMPTY_BYTES = ByteArray(0)
+
+        private fun gf2MatrixTimes(mat: LongArray, vec: Long): Long {
+            var sum = 0L
+            var v = vec
+            var idx = 0
+            while (v != 0L) {
+                if ((v and 1L) != 0L) {
+                    sum = sum xor mat[idx]
+                }
+                v = v ushr 1
+                idx++
+            }
+            return sum
+        }
+
+        private fun gf2MatrixSquare(square: LongArray, mat: LongArray) {
+            for (n in 0 until 32) {
+                square[n] = gf2MatrixTimes(mat, mat[n])
+            }
+        }
+
+        private fun crc32Combine(crc1Init: Long, crc2Init: Long, len2Init: Long): Long {
+            var len2 = len2Init
+            if (len2 <= 0L) return crc1Init
+            var crc1 = crc1Init and 0xFFFFFFFFL
+            val crc2 = crc2Init and 0xFFFFFFFFL
+            val even = LongArray(32)
+            val odd = LongArray(32)
+            odd[0] = 0xedb88320L
+            var row = 1L
+            for (n in 1 until 32) {
+                odd[n] = row
+                row = row shl 1
+            }
+            gf2MatrixSquare(even, odd)
+            gf2MatrixSquare(odd, even)
+            while (len2 != 0L) {
+                gf2MatrixSquare(even, odd)
+                if ((len2 and 1L) != 0L) {
+                    crc1 = gf2MatrixTimes(even, crc1)
+                }
+                len2 = len2 ushr 1
+                if (len2 == 0L) break
+                gf2MatrixSquare(odd, even)
+                if ((len2 and 1L) != 0L) {
+                    crc1 = gf2MatrixTimes(odd, crc1)
+                }
+                len2 = len2 ushr 1
+            }
+            return (crc1 xor crc2) and 0xFFFFFFFFL
+        }
     }
 }

@@ -53,7 +53,8 @@ internal object FastZipEditor {
             val entryPath: String,
             val sourcePath: Path,
             val intervalMillis: Long = 500L,
-            val progressListener: ((Long) -> Unit)? = null
+            val progressListener: ((Long) -> Unit)? = null,
+            val attributes: BasicFileAttributes? = null
         ) : Mutation()
     }
 
@@ -172,7 +173,8 @@ internal object FastZipEditor {
                                     entryPath = filePath,
                                     sourcePath = putMut.sourcePath,
                                     intervalMillis = putMut.intervalMillis,
-                                    progressListener = putMut.progressListener
+                                    progressListener = putMut.progressListener,
+                                    attributes = putMut.attributes
                                 )
                             }
                             else -> {}
@@ -198,38 +200,37 @@ internal object FastZipEditor {
         entryPath: String,
         sourcePath: Path,
         intervalMillis: Long,
-        progressListener: ((Long) -> Unit)?
+        progressListener: ((Long) -> Unit)?,
+        attributes: BasicFileAttributes? = null
     ) {
-        val attributes = sourcePath.readAttributes(
+        val resolvedAttributes = attributes ?: sourcePath.readAttributes(
             BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS
         )
-        val posix = attributes as? PosixFileAttributes
-        val mtime = attributes.lastModifiedTime()
+        val posix = resolvedAttributes as? PosixFileAttributes
+        val mtime = resolvedAttributes.lastModifiedTime()
         when {
-            attributes.isDirectory -> {
+            resolvedAttributes.isDirectory -> {
                 val mode = posix?.mode() ?: PosixFileMode.DIRECTORY_DEFAULT
                 writer.writeDirectory(entryPath, mtime, mode)
-                progressListener?.invoke(attributes.size())
+                progressListener?.invoke(resolvedAttributes.size())
             }
-            attributes.isSymbolicLink -> {
+            resolvedAttributes.isSymbolicLink -> {
                 val mode = posix?.mode() ?: PosixFileMode.SYMBOLIC_LINK_DEFAULT
                 val target = sourcePath.readSymbolicLinkByteString().toString()
                 writer.writeSymbolicLink(entryPath, target, mtime, mode)
-                progressListener?.invoke(attributes.size())
+                progressListener?.invoke(resolvedAttributes.size())
             }
             else -> {
                 val mode = posix?.mode() ?: PosixFileMode.FILE_DEFAULT
-                sourcePath.newInputStream(LinkOption.NOFOLLOW_LINKS).use { input ->
-                    writer.writeFile(
-                        entryName = entryPath,
-                        lastModifiedTime = mtime,
-                        mode = mode,
-                        uncompressedSizeHint = attributes.size(),
-                        inputStream = input,
-                        intervalMillis = intervalMillis,
-                        listener = progressListener
-                    )
-                }
+                writer.writeFileFromPath(
+                    entryName = entryPath,
+                    lastModifiedTime = mtime,
+                    mode = mode,
+                    uncompressedSizeHint = resolvedAttributes.size(),
+                    sourcePath = sourcePath,
+                    intervalMillis = intervalMillis,
+                    listener = progressListener
+                )
             }
         }
     }

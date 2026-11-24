@@ -1,7 +1,10 @@
 
 
+#include <dlfcn.h>
 #include <errno.h>
+#include <pthread.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -18,6 +21,7 @@
 #include <sys/types.h>
 #include <sys/xattr.h>
 #include <unistd.h>
+#include <zlib.h>
 
 #include <jni.h>
 
@@ -1583,4 +1587,380 @@ JNIEXPORT void JNICALL
 Java_me_zhanghai_android_files_provider_linux_syscall_Syscall_utimens(
         JNIEnv *env, jclass clazz, jobject javaPath, jobjectArray javaTimes) {
     doUtimens(env, javaPath, javaTimes, false);
+}
+
+#define NATIVE_ZIP_MAX_FILE_SIZE (4 * 1024 * 1024)
+
+static __thread uint8_t *tls_in_buf = NULL;
+static __thread size_t tls_in_cap = 0;
+static __thread uint8_t *tls_out_buf = NULL;
+static __thread size_t tls_out_cap = 0;
+static __thread z_stream tls_zstream;
+static __thread int tls_zstream_initialized = 0;
+static __thread int tls_zstream_level = -999;
+
+static uint8_t *ensureTlsInBuf(size_t needed) {
+    if (needed > tls_in_cap) {
+        size_t newCap = needed < 262144 ? 262144 : needed;
+        uint8_t *newBuf = (uint8_t *) realloc(tls_in_buf, newCap);
+        if (!newBuf) {
+            return NULL;
+        }
+        tls_in_buf = newBuf;
+        tls_in_cap = newCap;
+    }
+    return tls_in_buf;
+}
+
+static uint8_t *ensureTlsOutBuf(size_t needed) {
+    if (needed > tls_out_cap) {
+        size_t newCap = needed < 262144 ? 262144 : needed;
+        uint8_t *newBuf = (uint8_t *) realloc(tls_out_buf, newCap);
+        if (!newBuf) {
+            return NULL;
+        }
+        tls_out_buf = newBuf;
+        tls_out_cap = newCap;
+    }
+    return tls_out_buf;
+}
+
+static int ensureTlsZstream(int level) {
+    if (!tls_zstream_initialized || tls_zstream_level != level) {
+        if (tls_zstream_initialized) {
+            deflateEnd(&tls_zstream);
+            tls_zstream_initialized = 0;
+        }
+        memset(&tls_zstream, 0, sizeof(tls_zstream));
+        if (deflateInit2(&tls_zstream, level, Z_DEFLATED, -MAX_WBITS, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
+            return 0;
+        }
+        tls_zstream_initialized = 1;
+        tls_zstream_level = level;
+    } else {
+        if (deflateReset(&tls_zstream) != Z_OK) {
+            deflateEnd(&tls_zstream);
+            tls_zstream_initialized = 0;
+            return 0;
+        }
+    }
+    return 1;
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_me_zhanghai_android_files_provider_linux_syscall_Syscall_nativeDeflateFileToBuffer(
+        JNIEnv *env, jclass clazz, jobject javaPath, jint level, jlongArray outCrcAndSize) {
+    char *path = mallocStringFromByteString(env, javaPath);
+    if (!path) {
+        return NULL;
+    }
+    int fd = TEMP_FAILURE_RETRY(open(path, O_RDONLY | O_CLOEXEC));
+    free(path);
+    if (fd < 0) {
+        errno = 0;
+        return NULL;
+    }
+
+    struct stat64 st;
+    if (fstat64(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0 ||
+        st.st_size > NATIVE_ZIP_MAX_FILE_SIZE) {
+        close(fd);
+        errno = 0;
+        return NULL;
+    }
+
+    size_t hint = (size_t) st.st_size;
+    size_t bufLimit = hint + 65536;
+    if (bufLimit > NATIVE_ZIP_MAX_FILE_SIZE + 1) {
+        bufLimit = NATIVE_ZIP_MAX_FILE_SIZE + 1;
+    }
+    if (!ensureTlsInBuf(bufLimit)) {
+        close(fd);
+        return NULL;
+    }
+
+    size_t totalRead = 0;
+    while (totalRead <= NATIVE_ZIP_MAX_FILE_SIZE) {
+        size_t toRead = tls_in_cap - totalRead;
+        if (toRead == 0) {
+            if (tls_in_cap > NATIVE_ZIP_MAX_FILE_SIZE) {
+                close(fd);
+                return NULL;
+            }
+            if (!ensureTlsInBuf(NATIVE_ZIP_MAX_FILE_SIZE + 1)) {
+                close(fd);
+                return NULL;
+            }
+            toRead = tls_in_cap - totalRead;
+        }
+        ssize_t n = TEMP_FAILURE_RETRY(read(fd, tls_in_buf + totalRead, toRead));
+        if (n < 0) {
+            close(fd);
+            errno = 0;
+            return NULL;
+        }
+        if (n == 0) {
+            break;
+        }
+        totalRead += (size_t) n;
+    }
+    close(fd);
+    errno = 0;
+
+    if (totalRead > NATIVE_ZIP_MAX_FILE_SIZE) {
+        return NULL;
+    }
+
+    uLong crc = crc32(0L, Z_NULL, 0);
+    if (totalRead > 0) {
+        crc = crc32(crc, tls_in_buf, (uInt) totalRead);
+    }
+    jlong meta[2];
+    meta[0] = (jlong) crc;
+    meta[1] = (jlong) totalRead;
+    (*env)->SetLongArrayRegion(env, outCrcAndSize, 0, 2, meta);
+
+    if (level == 0) {
+        jbyteArray outArr = (*env)->NewByteArray(env, (jsize) totalRead);
+        if (outArr && totalRead > 0) {
+            (*env)->SetByteArrayRegion(env, outArr, 0, (jsize) totalRead, (const jbyte *) tls_in_buf);
+        }
+        return outArr;
+    }
+
+    if (!ensureTlsZstream((int) level)) {
+        return NULL;
+    }
+
+    uLong bound = deflateBound(&tls_zstream, (uLong) totalRead) + 64;
+    if (!ensureTlsOutBuf((size_t) bound)) {
+        return NULL;
+    }
+
+    tls_zstream.next_in = tls_in_buf;
+    tls_zstream.avail_in = (uInt) totalRead;
+    tls_zstream.next_out = tls_out_buf;
+    tls_zstream.avail_out = (uInt) tls_out_cap;
+
+    int ret = deflate(&tls_zstream, Z_FINISH);
+    if (ret != Z_STREAM_END) {
+        return NULL;
+    }
+
+    size_t outLen = (size_t) tls_zstream.total_out;
+    jbyteArray outArr = (*env)->NewByteArray(env, (jsize) outLen);
+    if (outArr && outLen > 0) {
+        (*env)->SetByteArrayRegion(env, outArr, 0, (jsize) outLen, (const jbyte *) tls_out_buf);
+    }
+    return outArr;
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_me_zhanghai_android_files_provider_linux_syscall_Syscall_nativeDeflateBlock(
+        JNIEnv *env, jclass clazz, jbyteArray inArr, jint inLen, jint level, jboolean isLast,
+        jlongArray outCrc) {
+    if (inLen < 0) {
+        return NULL;
+    }
+    size_t len = (size_t) inLen;
+    if (!ensureTlsInBuf(len > 0 ? len : 1)) {
+        return NULL;
+    }
+    if (len > 0) {
+        (*env)->GetByteArrayRegion(env, inArr, 0, inLen, (jbyte *) tls_in_buf);
+    }
+
+    uLong crc = crc32(0L, Z_NULL, 0);
+    if (len > 0) {
+        crc = crc32(crc, tls_in_buf, (uInt) len);
+    }
+    jlong crcLong = (jlong) crc;
+    (*env)->SetLongArrayRegion(env, outCrc, 0, 1, &crcLong);
+
+    if (!ensureTlsZstream((int) level)) {
+        return NULL;
+    }
+
+    uLong bound = deflateBound(&tls_zstream, (uLong) len) + 128;
+    if (!ensureTlsOutBuf((size_t) bound)) {
+        return NULL;
+    }
+
+    tls_zstream.next_in = tls_in_buf;
+    tls_zstream.avail_in = (uInt) len;
+    tls_zstream.next_out = tls_out_buf;
+    tls_zstream.avail_out = (uInt) tls_out_cap;
+
+    int flushMode = isLast ? Z_FINISH : Z_SYNC_FLUSH;
+    int ret = deflate(&tls_zstream, flushMode);
+    if (isLast) {
+        while (ret == Z_OK) {
+            size_t used = (size_t) tls_zstream.total_out;
+            if (!ensureTlsOutBuf(tls_out_cap * 2)) {
+                return NULL;
+            }
+            tls_zstream.next_out = tls_out_buf + used;
+            tls_zstream.avail_out = (uInt) (tls_out_cap - used);
+            ret = deflate(&tls_zstream, Z_FINISH);
+        }
+        if (ret != Z_STREAM_END) {
+            return NULL;
+        }
+    } else {
+        while (ret == Z_OK && (tls_zstream.avail_in > 0 || tls_zstream.avail_out == 0)) {
+            size_t used = (size_t) tls_zstream.total_out;
+            if (!ensureTlsOutBuf(tls_out_cap * 2)) {
+                return NULL;
+            }
+            tls_zstream.next_out = tls_out_buf + used;
+            tls_zstream.avail_out = (uInt) (tls_out_cap - used);
+            ret = deflate(&tls_zstream, Z_SYNC_FLUSH);
+        }
+        if (ret != Z_OK) {
+            return NULL;
+        }
+    }
+
+    size_t outLen = (size_t) tls_zstream.total_out;
+    jbyteArray outArr = (*env)->NewByteArray(env, (jsize) outLen);
+    if (outArr && outLen > 0) {
+        (*env)->SetByteArrayRegion(env, outArr, 0, (jsize) outLen, (const jbyte *) tls_out_buf);
+    }
+    return outArr;
+}
+
+typedef struct {
+    uint64_t id;
+    void *options;
+} lzma_filter_compat;
+
+typedef struct {
+    const uint8_t *next_in;
+    size_t avail_in;
+    uint64_t total_in;
+    uint8_t *next_out;
+    size_t avail_out;
+    uint64_t total_out;
+    const void *allocator;
+    void *internal;
+    void *reserved_ptr1;
+    void *reserved_ptr2;
+    void *reserved_ptr3;
+    void *reserved_ptr4;
+    uint64_t reserved_int1;
+    uint64_t reserved_int2;
+    size_t reserved_int3;
+    size_t reserved_int4;
+    uint32_t reserved_enum1;
+    uint32_t reserved_enum2;
+} lzma_stream_compat;
+
+static pthread_once_t lzma_once = PTHREAD_ONCE_INIT;
+static int (*fn_lzma_lzma_preset)(void *options, uint32_t preset) = NULL;
+static int (*fn_lzma_raw_encoder)(void *strm, const void *filters) = NULL;
+static int (*fn_lzma_code)(void *strm, int action) = NULL;
+static void (*fn_lzma_end)(void *strm) = NULL;
+static int (*fn_lzma_properties_encode)(const void *filter, uint8_t *props) = NULL;
+
+static void initLzmaSymbols(void) {
+    void *handle = dlopen("libarchive-jni.so", RTLD_LAZY);
+    if (!handle) {
+        return;
+    }
+    fn_lzma_lzma_preset = (int (*)(void *, uint32_t)) dlsym(handle, "lzma_lzma_preset");
+    fn_lzma_raw_encoder = (int (*)(void *, const void *)) dlsym(handle, "lzma_raw_encoder");
+    fn_lzma_code = (int (*)(void *, int)) dlsym(handle, "lzma_code");
+    fn_lzma_end = (void (*)(void *)) dlsym(handle, "lzma_end");
+    fn_lzma_properties_encode = (int (*)(const void *, uint8_t *)) dlsym(handle, "lzma_properties_encode");
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_me_zhanghai_android_files_provider_linux_syscall_Syscall_nativeLzma2CompressBlock(
+        JNIEnv *env, jclass clazz, jbyteArray inArr, jint inLen, jint level, jint dictSize,
+        jbyteArray outProp) {
+    pthread_once(&lzma_once, initLzmaSymbols);
+    if (!fn_lzma_lzma_preset || !fn_lzma_raw_encoder || !fn_lzma_code || !fn_lzma_end ||
+        !fn_lzma_properties_encode || inLen < 0) {
+        return NULL;
+    }
+
+    uint8_t opt[256];
+    memset(opt, 0, sizeof(opt));
+    if (fn_lzma_lzma_preset(opt, (uint32_t) level) != 0) {
+        return NULL;
+    }
+    if (dictSize > 0) {
+        uint32_t d = (uint32_t) dictSize;
+        memcpy(opt, &d, sizeof(d));
+    }
+
+    lzma_filter_compat filters[2];
+    filters[0].id = 0x21ULL; // LZMA_FILTER_LZMA2
+    filters[0].options = opt;
+    filters[1].id = UINT64_MAX; // LZMA_VLI_UNKNOWN
+    filters[1].options = NULL;
+
+    if (outProp != NULL) {
+        uint8_t prop = 0;
+        if (fn_lzma_properties_encode(&filters[0], &prop) != 0) {
+            return NULL;
+        }
+        jbyte propByte = (jbyte) prop;
+        (*env)->SetByteArrayRegion(env, outProp, 0, 1, &propByte);
+    }
+
+    if (inLen == 0) {
+        return (*env)->NewByteArray(env, 0);
+    }
+
+    size_t len = (size_t) inLen;
+    if (!ensureTlsInBuf(len)) {
+        return NULL;
+    }
+    (*env)->GetByteArrayRegion(env, inArr, 0, inLen, (jbyte *) tls_in_buf);
+
+    size_t outBound = len + (len >> 3) + 65536;
+    if (!ensureTlsOutBuf(outBound)) {
+        return NULL;
+    }
+
+    lzma_stream_compat strm;
+    memset(&strm, 0, sizeof(strm));
+    if (fn_lzma_raw_encoder(&strm, filters) != 0) {
+        return NULL;
+    }
+
+    strm.next_in = tls_in_buf;
+    strm.avail_in = len;
+    strm.next_out = tls_out_buf;
+    strm.avail_out = tls_out_cap;
+
+    int ret = fn_lzma_code(&strm, 3); // LZMA_FINISH
+    while (ret == 0) { // LZMA_OK
+        size_t used = (size_t) strm.total_out;
+        if (!ensureTlsOutBuf(tls_out_cap * 2)) {
+            fn_lzma_end(&strm);
+            return NULL;
+        }
+        strm.next_out = tls_out_buf + used;
+        strm.avail_out = tls_out_cap - used;
+        ret = fn_lzma_code(&strm, 3);
+    }
+    size_t outLen = (size_t) strm.total_out;
+    fn_lzma_end(&strm);
+
+    if (ret != 1) { // LZMA_STREAM_END
+        return NULL;
+    }
+
+    // Strip the trailing 0x00 end-of-stream marker so chunks concatenate into one 7z stream.
+    if (outLen > 0 && tls_out_buf[outLen - 1] == 0x00) {
+        outLen--;
+    }
+
+    jbyteArray outArr = (*env)->NewByteArray(env, (jsize) outLen);
+    if (outArr && outLen > 0) {
+        (*env)->SetByteArrayRegion(env, outArr, 0, (jsize) outLen, (const jbyte *) tls_out_buf);
+    }
+    return outArr;
 }

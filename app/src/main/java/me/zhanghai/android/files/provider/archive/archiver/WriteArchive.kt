@@ -1,13 +1,10 @@
-/*
- * Copyright (c) 2023 Hai Zhang <dreaming.in.code.zh@gmail.com>
- * All Rights Reserved.
- */
-
 package me.zhanghai.android.files.provider.archive.archiver
 
+import android.system.Os
 import java8.nio.channels.SeekableByteChannel
 import java8.nio.charset.StandardCharsets
 import java8.nio.file.attribute.FileTime
+import me.zhanghai.android.files.app.application
 import me.zhanghai.android.files.provider.common.PosixFileModeBit
 import me.zhanghai.android.files.provider.common.PosixFileType
 import me.zhanghai.android.files.provider.common.PosixGroup
@@ -18,12 +15,13 @@ import me.zhanghai.android.libarchive.ArchiveEntry
 import me.zhanghai.android.libarchive.ArchiveException
 import java.io.Closeable
 import java.io.IOException
+import java.io.InterruptedIOException
 import java.io.OutputStream
 import java.nio.ByteBuffer
 import kotlin.math.min
 
 class WriteArchive @Throws(ArchiveException::class) constructor(
-    channel: SeekableByteChannel,
+    private val channel: SeekableByteChannel,
     format: Int,
     filter: Int,
     password: String?,
@@ -31,8 +29,11 @@ class WriteArchive @Throws(ArchiveException::class) constructor(
     sevenZMethod: SevenZCompressionMethod = SevenZCompressionMethod.LZMA2
 ) : Closeable {
     private val archive = Archive.writeNew()
+    private val directBuffer = ByteBuffer.allocateDirect(IO_BUFFER_SIZE)
+    private val outputBuffer = ByteBuffer.allocateDirect(IO_BUFFER_SIZE)
 
     init {
+        ensureTempDir()
         var successful = false
         try {
             Archive.writeSetBytesPerBlock(archive, IO_BUFFER_SIZE)
@@ -73,7 +74,11 @@ class WriteArchive @Throws(ArchiveException::class) constructor(
                 )
             }
             Archive.writeOpen(
-                archive, null, null, { _, _, buffer -> channel.write(buffer) }, null
+                archive,
+                null,
+                null,
+                { _, _, buffer -> writeToOutputBuffer(buffer) },
+                { _, _ -> flushOutputBuffer() }
             )
             successful = true
         } finally {
@@ -81,6 +86,29 @@ class WriteArchive @Throws(ArchiveException::class) constructor(
                 close()
             }
         }
+    }
+
+    private fun writeToOutputBuffer(buffer: ByteBuffer) {
+        val incoming = buffer.remaining()
+        if (incoming == 0) return
+        if (incoming > outputBuffer.remaining()) {
+            flushOutputBuffer()
+            if (incoming >= outputBuffer.capacity()) {
+                while (buffer.hasRemaining()) {
+                    channel.write(buffer)
+                }
+                return
+            }
+        }
+        outputBuffer.put(buffer)
+    }
+
+    private fun flushOutputBuffer() {
+        outputBuffer.flip()
+        while (outputBuffer.hasRemaining()) {
+            channel.write(outputBuffer)
+        }
+        outputBuffer.clear()
     }
 
     private fun trySetFormatOption(key: String, value: String) {
@@ -106,12 +134,51 @@ class WriteArchive @Throws(ArchiveException::class) constructor(
         Archive.writeHeader(archive, entry.entry)
     }
 
+    @Throws(IOException::class)
+    fun writeData(
+        inputChannel: SeekableByteChannel,
+        intervalMillis: Long,
+        listener: ((Long) -> Unit)?
+    ) {
+        var lastProgressMillis = System.currentTimeMillis()
+        var copiedSize = 0L
+        while (true) {
+            directBuffer.clear()
+            val readSize = inputChannel.read(directBuffer)
+            if (readSize == -1) {
+                break
+            }
+            if (readSize == 0) {
+                continue
+            }
+            if (Thread.interrupted()) {
+                throw InterruptedIOException()
+            }
+            directBuffer.flip()
+            while (directBuffer.hasRemaining()) {
+                Archive.writeData(archive, directBuffer)
+            }
+            copiedSize += readSize.toLong()
+            val currentTimeMillis = System.currentTimeMillis()
+            if (listener != null && currentTimeMillis >= lastProgressMillis + intervalMillis) {
+                listener(copiedSize)
+                lastProgressMillis = currentTimeMillis
+                copiedSize = 0L
+            }
+        }
+        listener?.invoke(copiedSize)
+    }
+
     @Throws(ArchiveException::class)
     fun newDataOutputStream(): OutputStream = DataOutputStream()
 
     @Throws(ArchiveException::class)
     override fun close() {
-        Archive.writeFree(archive)
+        try {
+            Archive.writeFree(archive)
+        } finally {
+            flushOutputBuffer()
+        }
     }
 
     inner class Entry(
@@ -178,8 +245,6 @@ class WriteArchive @Throws(ArchiveException::class) constructor(
     }
 
     private inner class DataOutputStream : OutputStream() {
-        private val directBuffer = ByteBuffer.allocateDirect(IO_BUFFER_SIZE)
-
         @Throws(IOException::class)
         override fun write(b: Int) {
             directBuffer.clear()
@@ -207,6 +272,18 @@ class WriteArchive @Throws(ArchiveException::class) constructor(
     }
 
     companion object {
-        private const val IO_BUFFER_SIZE = 64 * 1024
+        private const val IO_BUFFER_SIZE = 256 * 1024
+
+        @Volatile
+        private var tempDirInitialized = false
+
+        private fun ensureTempDir() {
+            if (tempDirInitialized) return
+            tempDirInitialized = true
+            try {
+                Os.setenv("TMPDIR", application.cacheDir.absolutePath, false)
+            } catch (_: Exception) {
+            }
+        }
     }
 }

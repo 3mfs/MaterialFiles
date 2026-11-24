@@ -1,8 +1,3 @@
-/*
- * Copyright (c) 2019 Hai Zhang <dreaming.in.code.zh@gmail.com>
- * All Rights Reserved.
- */
-
 package me.zhanghai.android.files.nonfree
 
 import android.annotation.SuppressLint
@@ -42,7 +37,7 @@ object FirebaseInitializer {
             ConnectionResult.SUCCESS
 
     private fun verifyPackageName(): Boolean {
-        return application.packageName == "me.zhanghai.android.files"
+        return application.packageName == "com.moxapps.files"
     }
 
     @SuppressLint("PackageManagerGetSignatures")

@@ -130,7 +130,7 @@
             </intent-filter>
             -->
             <intent-filter>
-                <action android:name="me.zhanghai.android.files.intent.action.VIEW_DOWNLOADS" />
+                <action android:name="com.moxapps.files.intent.action.VIEW_DOWNLOADS" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
             <meta-data
@@ -149,7 +149,7 @@
             android:exported="true"
             android:theme="@style/Theme.MaterialFiles.Translucent">
             <intent-filter>
-                <action android:name="me.zhanghai.android.files.intent.action.OPEN_FILE" />
+                <action android:name="com.moxapps.files.intent.action.OPEN_FILE" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="*/*" />
             </intent-filter>
@@ -236,7 +236,7 @@
             android:launchMode="singleTop"
             android:theme="@style/Theme.MaterialFiles">
             <intent-filter>
-                <action android:name="me.zhanghai.android.files.intent.action.MANAGE_FTP_SERVER" />
+                <action android:name="com.moxapps.files.intent.action.MANAGE_FTP_SERVER" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
             <intent-filter>

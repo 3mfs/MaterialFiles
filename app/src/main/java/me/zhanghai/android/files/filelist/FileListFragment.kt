@@ -68,6 +68,7 @@ import me.zhanghai.android.files.file.extension
 import me.zhanghai.android.files.file.fileProviderUri
 import me.zhanghai.android.files.file.isApk
 import me.zhanghai.android.files.file.isImage
+import me.zhanghai.android.files.filejob.FileJobProgressDialogFragment
 import me.zhanghai.android.files.filejob.FileJobService
 import me.zhanghai.android.files.filelist.FileSortOptions.By
 import me.zhanghai.android.files.filelist.FileSortOptions.Order
@@ -1011,10 +1012,11 @@ class FileListFragment : Fragment(), BreadcrumbLayout.Listener, FileListAdapter.
         sevenZMethod: SevenZCompressionMethod
     ) {
         val archiveFile = viewModel.currentPath.resolve(name)
-        FileJobService.archive(
+        val jobId = FileJobService.archive(
             makePathListForJob(files), archiveFile, format, filter, password, compressionLevel,
             sevenZMethod, requireContext()
         )
+        FileJobProgressDialogFragment.show(jobId, name, this)
         viewModel.selectFiles(files, false)
     }
 
@@ -1623,7 +1625,7 @@ class FileListFragment : Fragment(), BreadcrumbLayout.Listener, FileListAdapter.
 
     companion object {
         private const val ACTION_VIEW_DOWNLOADS =
-            "me.zhanghai.android.files.intent.action.VIEW_DOWNLOADS"
+            "com.moxapps.files.intent.action.VIEW_DOWNLOADS"
 
         private const val IMAGE_VIEWER_ACTIVITY_PATH_LIST_SIZE_MAX = 1000
     }

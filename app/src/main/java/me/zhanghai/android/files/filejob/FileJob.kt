@@ -1,8 +1,3 @@
-/*
- * Copyright (c) 2019 Hai Zhang <dreaming.in.code.zh@gmail.com>
- * All Rights Reserved.
- */
-
 package me.zhanghai.android.files.filejob
 
 import me.zhanghai.android.files.util.showToast
@@ -29,6 +24,7 @@ abstract class FileJob {
             service.showToast(e.toString())
         } finally {
             service.notificationManager.cancel(id)
+            FileJobProgressTracker.finish(id)
         }
     }
 

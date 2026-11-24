@@ -1,8 +1,3 @@
-/*
- * Copyright (c) 2019 Hai Zhang <dreaming.in.code.zh@gmail.com>
- * All Rights Reserved.
- */
-
 package me.zhanghai.android.files.provider.archive.archiver
 
 import java8.nio.channels.SeekableByteChannel
@@ -14,11 +9,10 @@ import me.zhanghai.android.files.provider.common.PosixFileAttributes
 import me.zhanghai.android.files.provider.common.PosixFileMode
 import me.zhanghai.android.files.provider.common.PosixFileType
 import me.zhanghai.android.files.provider.common.copyTo
-import me.zhanghai.android.files.provider.common.getLastModifiedTime
+import me.zhanghai.android.files.provider.common.newByteChannel
 import me.zhanghai.android.files.provider.common.newInputStream
 import me.zhanghai.android.files.provider.common.readAttributes
 import me.zhanghai.android.files.provider.common.readSymbolicLinkByteString
-import me.zhanghai.android.files.provider.common.size
 import me.zhanghai.android.libarchive.Archive
 import java.io.Closeable
 import java.io.IOException
@@ -37,33 +31,51 @@ class ArchiveWriter @Throws(IOException::class) constructor(
         null
     }
 
-    private val archive: WriteArchive? = if (format != Archive.FORMAT_ZIP) {
+    private val fastSevenZWriter: FastSevenZWriter? = if (
+        format == Archive.FORMAT_7ZIP && (
+            sevenZMethod == SevenZCompressionMethod.COPY ||
+                (sevenZMethod == SevenZCompressionMethod.LZMA2 &&
+                    FastSevenZWriter.isSupported(compressionLevel))
+            )
+    ) {
+        FastSevenZWriter(channel, compressionLevel, sevenZMethod)
+    } else {
+        null
+    }
+
+    private val archive: WriteArchive? = if (fastZipWriter == null && fastSevenZWriter == null) {
         WriteArchive(channel, format, filter, password, compressionLevel, sevenZMethod)
     } else {
         null
     }
 
     @Throws(IOException::class)
-    fun write(file: Path, entryName: Path, intervalMillis: Long, listener: ((Long) -> Unit)?) {
+    fun write(
+        file: Path,
+        entryName: Path,
+        intervalMillis: Long,
+        listener: ((Long) -> Unit)?,
+        attributes: BasicFileAttributes? = null
+    ) {
         val name = entryName.toString()
-        val lastModifiedTime = file.getLastModifiedTime(LinkOption.NOFOLLOW_LINKS)
-        val attributes = file.readAttributes(
+        val resolvedAttributes = attributes ?: file.readAttributes(
             BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS
         )
+        val lastModifiedTime = resolvedAttributes.lastModifiedTime()
         val type = when {
-            attributes is PosixFileAttributes -> attributes.type()
-            attributes.isDirectory -> PosixFileType.DIRECTORY
-            attributes.isSymbolicLink -> PosixFileType.SYMBOLIC_LINK
+            resolvedAttributes is PosixFileAttributes -> resolvedAttributes.type()
+            resolvedAttributes.isDirectory -> PosixFileType.DIRECTORY
+            resolvedAttributes.isSymbolicLink -> PosixFileType.SYMBOLIC_LINK
             else -> PosixFileType.REGULAR_FILE
         }
-        val size = file.size(LinkOption.NOFOLLOW_LINKS)
-        val posixAttributes = attributes as? PosixFileAttributes
+        val size = resolvedAttributes.size()
+        val posixAttributes = resolvedAttributes as? PosixFileAttributes
         val mode = posixAttributes?.mode() ?: when {
-            attributes.isDirectory -> PosixFileMode.DIRECTORY_DEFAULT
-            attributes.isSymbolicLink -> PosixFileMode.SYMBOLIC_LINK_DEFAULT
+            resolvedAttributes.isDirectory -> PosixFileMode.DIRECTORY_DEFAULT
+            resolvedAttributes.isSymbolicLink -> PosixFileMode.SYMBOLIC_LINK_DEFAULT
             else -> PosixFileMode.FILE_DEFAULT
         }
-        val symbolicLinkTarget = if (attributes.isSymbolicLink) {
+        val symbolicLinkTarget = if (resolvedAttributes.isSymbolicLink) {
             file.readSymbolicLinkByteString().toString()
         } else {
             null
@@ -74,24 +86,46 @@ class ArchiveWriter @Throws(IOException::class) constructor(
             when (type) {
                 PosixFileType.DIRECTORY -> {
                     zipWriter.writeDirectory(name, lastModifiedTime, mode)
-                    listener?.invoke(attributes.size())
+                    listener?.invoke(size)
                 }
                 PosixFileType.SYMBOLIC_LINK -> {
                     zipWriter.writeSymbolicLink(
                         name, symbolicLinkTarget.orEmpty(), lastModifiedTime, mode
                     )
-                    listener?.invoke(attributes.size())
+                    listener?.invoke(size)
                 }
                 PosixFileType.REGULAR_FILE -> {
-                    file.newInputStream(LinkOption.NOFOLLOW_LINKS).use { inputStream ->
-                        zipWriter.writeFile(
-                            name, lastModifiedTime, mode, size, inputStream, intervalMillis,
-                            listener
-                        )
-                    }
+                    zipWriter.writeFileFromPath(
+                        name, lastModifiedTime, mode, size, file, intervalMillis, listener
+                    )
                 }
                 else -> {
-                    listener?.invoke(attributes.size())
+                    listener?.invoke(size)
+                }
+            }
+            return
+        }
+
+        val sevenZWriter = fastSevenZWriter
+        if (sevenZWriter != null) {
+            when (type) {
+                PosixFileType.DIRECTORY -> {
+                    sevenZWriter.writeDirectory(name, lastModifiedTime, mode)
+                    listener?.invoke(size)
+                }
+                PosixFileType.SYMBOLIC_LINK -> {
+                    sevenZWriter.writeSymbolicLink(
+                        name, symbolicLinkTarget.orEmpty(), lastModifiedTime, mode
+                    )
+                    listener?.invoke(size)
+                }
+                PosixFileType.REGULAR_FILE -> {
+                    sevenZWriter.writeFileFromPath(
+                        name, lastModifiedTime, mode, file, intervalMillis, listener
+                    )
+                }
+                else -> {
+                    listener?.invoke(size)
                 }
             }
             return
@@ -105,17 +139,29 @@ class ArchiveWriter @Throws(IOException::class) constructor(
             symbolicLinkTarget
         ).use { libArchive.writeEntry(it) }
         if (type == PosixFileType.REGULAR_FILE) {
-            file.newInputStream(LinkOption.NOFOLLOW_LINKS).use { inputStream ->
-                inputStream.copyTo(libArchive.newDataOutputStream(), intervalMillis, listener)
+            val channel = try {
+                file.newByteChannel(LinkOption.NOFOLLOW_LINKS)
+            } catch (_: UnsupportedOperationException) {
+                null
+            } catch (_: IOException) {
+                null
+            }
+            if (channel != null) {
+                channel.use { libArchive.writeData(it, intervalMillis, listener) }
+            } else {
+                file.newInputStream(LinkOption.NOFOLLOW_LINKS).use { inputStream ->
+                    inputStream.copyTo(libArchive.newDataOutputStream(), intervalMillis, listener)
+                }
             }
         } else {
-            listener?.invoke(attributes.size())
+            listener?.invoke(size)
         }
     }
 
     @Throws(IOException::class)
     override fun close() {
         fastZipWriter?.close()
+        fastSevenZWriter?.close()
         archive?.close()
     }
 }

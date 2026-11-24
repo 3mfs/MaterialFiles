@@ -1,13 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 
-<!--
-  ~ Copyright (c) 2018 Hai Zhang <dreaming.in.code.zh@gmail.com>
-  ~ All Rights Reserved.
-  -->
-
 <resources>
 
-    <string name="app_name">Material Files</string>
+    <string name="app_name">Mox Files</string>
 
     <string name="close">Zavřít</string>
     <string name="copy">Kopírovat</string>
@@ -726,7 +721,7 @@
     <string name="about_licenses_title">Licence</string>
     <string name="about_privacy_policy_title">Zásady ochrany soukromí</string>
     <string name="about_author_title">Autor</string>
-    <string name="about_author_name_title">Hai Zhang</string>
+    <string name="about_author_name_title">Mox Apps</string>
     <string name="about_author_github_title">Sledovat na GitHubu</string>
     <string name="about_author_twitter_title">Sledovat na Twitteru</string>
 </resources>
