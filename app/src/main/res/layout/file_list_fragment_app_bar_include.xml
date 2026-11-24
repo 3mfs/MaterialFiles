@@ -5,7 +5,7 @@
     xmlns:app="http://schemas.android.com/apk/res-auto">
 
     <!-- app:statusBarBackground is broken when scrolling. -->
-    <me.zhanghai.android.files.ui.CoordinatorAppBarLayout
+    <com.moxapps.files.ui.CoordinatorAppBarLayout
         android:id="@+id/appBarLayout"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -19,7 +19,7 @@
             android:layout_height="wrap_content"
             app:layout_scrollFlags="@integer/file_list_toolbar_scroll_flags">
 
-            <me.zhanghai.android.files.ui.CrossfadeSubtitleToolbar
+            <com.moxapps.files.ui.CrossfadeSubtitleToolbar
                 android:id="@+id/toolbar"
                 android:layout_width="match_parent"
                 android:layout_height="?actionBarSize"
@@ -30,7 +30,7 @@
                 app:popupTheme="?actionBarPopupTheme"
                 app:subtitleTextAppearance="@style/TextAppearance.AppCompat.Widget.ActionBar.Subtitle.Small" />
 
-            <me.zhanghai.android.files.ui.OverlayToolbar
+            <com.moxapps.files.ui.OverlayToolbar
                 android:id="@+id/overlayToolbar"
                 android:layout_width="match_parent"
                 android:layout_height="?actionBarSize"
@@ -42,11 +42,11 @@
                 app:popupTheme="?actionBarPopupTheme" />
         </FrameLayout>
 
-        <me.zhanghai.android.files.filelist.BreadcrumbLayout
+        <com.moxapps.files.filelist.BreadcrumbLayout
             android:id="@+id/breadcrumbLayout"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:paddingStart="@dimen/content_start_margin_minus_12dp"
             android:paddingEnd="@dimen/screen_edge_margin_minus_12dp" />
-    </me.zhanghai.android.files.ui.CoordinatorAppBarLayout>
+    </com.moxapps.files.ui.CoordinatorAppBarLayout>
 </merge>

@@ -6,11 +6,11 @@
 
     <PreferenceCategory android:title="@string/settings_interface_title">
 
-        <me.zhanghai.android.files.settings.LocalePreference
+        <com.moxapps.files.settings.LocalePreference
             android:key="@string/pref_key_locale"
             android:title="@string/settings_locale_title" />
 
-        <me.zhanghai.android.files.theme.custom.ThemeColorPreference
+        <com.moxapps.files.theme.custom.ThemeColorPreference
             android:key="@string/pref_key_theme_color"
             android:title="@string/settings_theme_color_title"
             android:defaultValue="@string/pref_default_value_theme_color"
@@ -52,24 +52,24 @@
 
     <PreferenceCategory android:title="@string/settings_behavior_title">
 
-        <me.zhanghai.android.files.settings.DefaultDirectoryPreference
+        <com.moxapps.files.settings.DefaultDirectoryPreference
             android:key="@string/pref_key_file_list_default_directory"
             android:title="@string/settings_default_directory_title"
             app:useSimpleSummaryProvider="true" />
 
-        <me.zhanghai.android.files.settings.StoragesPreference
+        <com.moxapps.files.settings.StoragesPreference
             android:title="@string/settings_storages_title"
             android:summary="@string/settings_storages_summary_empty" />
 
-        <me.zhanghai.android.files.settings.StandardDirectoriesPreference
+        <com.moxapps.files.settings.StandardDirectoriesPreference
             android:title="@string/settings_standard_directories_title"
             android:summary="@string/settings_standard_directories_summary_empty" />
 
-        <me.zhanghai.android.files.settings.BookmarkDirectoriesPreference
+        <com.moxapps.files.settings.BookmarkDirectoriesPreference
             android:title="@string/settings_bookmark_directories_title"
             android:summary="@string/settings_bookmark_directories_summary_empty" />
 
-        <me.zhanghai.android.files.settings.RootStrategyPreference
+        <com.moxapps.files.settings.RootStrategyPreference
             android:key="@string/pref_key_root_strategy"
             android:title="@string/settings_root_strategy_title"
             android:defaultValue="@string/pref_default_value_root_strategy"
@@ -77,7 +77,7 @@
             android:entryValues="@array/pref_entry_values_root_strategy"
             app:useSimpleSummaryProvider="true" />
 
-        <me.zhanghai.android.files.settings.CharsetPreference
+        <com.moxapps.files.settings.CharsetPreference
             android:key="@string/pref_key_archive_file_name_encoding"
             android:title="@string/settings_archive_file_name_encoding_title"
             android:defaultValue="@string/pref_default_value_archive_file_name_encoding"

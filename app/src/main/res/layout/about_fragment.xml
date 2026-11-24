@@ -7,7 +7,7 @@
     android:layout_height="match_parent"
     android:fitsSystemWindows="true">
 
-    <me.zhanghai.android.files.ui.CoordinatorAppBarLayout
+    <com.moxapps.files.ui.CoordinatorAppBarLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:background="?colorAppBarSurface"
@@ -20,9 +20,9 @@
             android:layout_width="match_parent"
             android:layout_height="?actionBarSize"
             app:popupTheme="?actionBarPopupTheme" />
-    </me.zhanghai.android.files.ui.CoordinatorAppBarLayout>
+    </com.moxapps.files.ui.CoordinatorAppBarLayout>
 
-    <me.zhanghai.android.files.ui.CoordinatorScrollingFrameLayout
+    <com.moxapps.files.ui.CoordinatorScrollingFrameLayout
         android:layout_width="match_parent"
         android:layout_height="match_parent">
 
@@ -325,5 +325,5 @@
                 </com.google.android.material.card.MaterialCardView>
             </LinearLayout>
         </androidx.core.widget.NestedScrollView>
-    </me.zhanghai.android.files.ui.CoordinatorScrollingFrameLayout>
+    </com.moxapps.files.ui.CoordinatorScrollingFrameLayout>
 </androidx.coordinatorlayout.widget.CoordinatorLayout>

@@ -1,9 +1,9 @@
 {
   "project_info": {
     "project_number": "728501351509",
-    "firebase_url": "https://zhanghai-materialfiles.firebaseio.com",
-    "project_id": "zhanghai-materialfiles",
-    "storage_bucket": "zhanghai-materialfiles.appspot.com"
+    "firebase_url": "https://mox-files.firebaseio.com",
+    "project_id": "mox-files",
+    "storage_bucket": "mox-files.appspot.com"
   },
   "client": [
     {

@@ -9,6 +9,10 @@
     android:tint="?colorControlNormal">
 
     <path
-        android:fillColor="@android:color/white"
-        android:pathData="M9 16.2L4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4L9 16.2z" />
+        android:fillColor="@android:color/transparent"
+        android:strokeColor="@android:color/white"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M 20 6 9 17 l -5 -5" />
 </vector>

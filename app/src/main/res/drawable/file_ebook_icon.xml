@@ -8,6 +8,18 @@
     android:viewportHeight="24">
 
     <path
-        android:fillColor="@color/file_icon_blue"
-        android:pathData="M18 2H6c-1.1 0-2 0.9-2 2v16c0 1.1 0.9 2 2 2h12c1.1 0 2-0.9 2-2V4c0-1.1-0.9-2-2-2zM9 4h2v5l-1-0.75L9 9V4zm9 16H6V4h1v9l3-2.25L13 13V4h5v16z" />
+        android:fillColor="@android:color/transparent"
+        android:strokeColor="@color/file_icon_blue"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M 12 5 v 16" />
+
+    <path
+        android:fillColor="@android:color/transparent"
+        android:strokeColor="@color/file_icon_blue"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M 20.001 19 A 2 2 0 0 0 22 17 V 5 a 2 2 0 0 0 -1.999 -2 L 16 3.002 A 5 5 0 0 0 12 5 a 5 5 0 0 0 -4 -2 H 4 a 2 2 0 0 0 -2 2 v 12 a 2 2 0 0 0 1.999 2 H 8 a 5 5 0 0 1 4 2 5 5 0 0 1 4 -2 z" />
 </vector>

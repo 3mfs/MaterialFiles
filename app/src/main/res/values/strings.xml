@@ -658,13 +658,16 @@
     <string name="storage_edit_webdav_server_title_edit">Edit WebDAV server</string>
     <string name="storage_edit_webdav_server_title_add">Add WebDAV server</string>
     <string name="storage_edit_webdav_server_host">Hostname</string>
+    <string name="storage_edit_webdav_server_host_helper">Hostname or IP only (without https:// or /path)</string>
     <string name="storage_edit_webdav_server_host_error_empty">Enter a hostname</string>
+    <string name="storage_edit_webdav_server_host_error_has_scheme">Remove http:// or https:// and select the protocol below</string>
+    <string name="storage_edit_webdav_server_host_error_has_path">Enter only the hostname here and put the path in the Path field</string>
     <string name="storage_edit_webdav_server_host_error_invalid">Invalid hostname</string>
     <string name="storage_edit_webdav_server_port">Port</string>
     <string name="storage_edit_webdav_server_port_placeholder" translatable="false">443</string>
     <string name="storage_edit_webdav_server_port_error_invalid">Invalid port</string>
     <string name="storage_edit_webdav_server_path">Path</string>
-    <string name="storage_edit_webdav_server_path_placeholder">Can be left empty</string>
+    <string name="storage_edit_webdav_server_path_placeholder">Optional, unless required by server (e.g. remote.php/dav)</string>
     <string name="storage_edit_webdav_server_name">Name</string>
     <string name="storage_edit_webdav_server_name_placeholder">Use hostname</string>
     <string name="storage_edit_webdav_server_protocol">Protocol</string>
