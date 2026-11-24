@@ -81,6 +81,7 @@ import me.zhanghai.android.files.provider.common.createFile
 import me.zhanghai.android.files.provider.common.delete
 import me.zhanghai.android.files.provider.common.deleteIfExists
 import me.zhanghai.android.files.provider.common.exists
+import me.zhanghai.android.files.provider.common.getFileAttributeView
 import me.zhanghai.android.files.provider.common.getFileStore
 import me.zhanghai.android.files.provider.common.getMode
 import me.zhanghai.android.files.provider.common.getPath
@@ -1209,8 +1210,8 @@ private fun FileJob.insertIntoZipBatch(
             }
         }
 
-        acceptedSources += source
-        notifiedTargets += topTarget
+        acceptedSources.add(source)
+        notifiedTargets.add(topTarget)
 
         Files.walkFileTree(source, object : SimpleFileVisitor<Path>() {
             @Throws(IOException::class)

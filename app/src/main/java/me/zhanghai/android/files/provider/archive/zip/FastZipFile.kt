@@ -7,11 +7,11 @@ package me.zhanghai.android.files.provider.archive.zip
 
 import java8.nio.channels.SeekableByteChannel
 import java8.nio.file.attribute.FileTime
+import me.zhanghai.android.files.provider.archive.ARCHIVE_ERRNO_MISC
 import me.zhanghai.android.files.provider.archive.archiver.ReadArchive
 import me.zhanghai.android.files.provider.common.PosixFileMode
 import me.zhanghai.android.files.provider.common.PosixFileModeBit
 import me.zhanghai.android.files.provider.common.PosixFileType
-import me.zhanghai.android.libarchive.Archive
 import me.zhanghai.android.libarchive.ArchiveException
 import java.io.EOFException
 import java.io.IOException
@@ -459,7 +459,7 @@ internal object FastZipFile {
         closeChannelOnClose: Boolean
     ): InputStream {
         if (passwords.isEmpty()) {
-            throw ArchiveException(Archive.ERRNO_MISC, "Passphrase required for this entry")
+            throw ArchiveException(ARCHIVE_ERRNO_MISC, "Passphrase required for this entry")
         }
         val saltSize = WinZipAes.saltSize(entry.aesStrength)
         val headerSize = saltSize + WinZipAes.PASSWORD_VERIFIER_SIZE
@@ -477,7 +477,7 @@ internal object FastZipFile {
             if (decryptor != null) break
         }
         if (decryptor == null) {
-            throw ArchiveException(Archive.ERRNO_MISC, "Incorrect passphrase")
+            throw ArchiveException(ARCHIVE_ERRNO_MISC, "Incorrect passphrase")
         }
 
         val cipherDataOffset = dataOffset + headerSize
@@ -501,7 +501,7 @@ internal object FastZipFile {
         fallbackCharset: Charset
     ): InputStream {
         if (passwords.isEmpty()) {
-            throw ArchiveException(Archive.ERRNO_MISC, "Passphrase required for this entry")
+            throw ArchiveException(ARCHIVE_ERRNO_MISC, "Passphrase required for this entry")
         }
         if (entry.compressedSize < ZipCryptoDecryptor.HEADER_SIZE) {
             throw IOException("Corrupt ZipCrypto entry payload")
@@ -518,7 +518,7 @@ internal object FastZipFile {
             if (decryptor != null) break
         }
         if (decryptor == null) {
-            throw ArchiveException(Archive.ERRNO_MISC, "Incorrect passphrase")
+            throw ArchiveException(ARCHIVE_ERRNO_MISC, "Incorrect passphrase")
         }
 
         val payloadOffset = dataOffset + ZipCryptoDecryptor.HEADER_SIZE

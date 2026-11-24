@@ -1,7 +1,4 @@
-/*
- * Copyright (c) 2018 Hai Zhang <dreaming.in.code.zh@gmail.com>
- * All Rights Reserved.
- */
+
 
 package me.zhanghai.android.files.provider.archive.archiver
 
@@ -30,7 +27,7 @@ import java.io.IOException
 import java.io.InputStream
 import java.nio.charset.Charset
 
-object ArchiveReader {
+internal object ArchiveReader {
     class ArchiveIndex(
         val entries: Map<Path, ReadArchive.Entry>,
         val tree: Map<Path, List<Path>>,
@@ -253,7 +250,7 @@ object ArchiveReader {
             for (path in requestedPaths) {
                 val ze = zipEntries[path]
                 if (ze == null || !ze.isFastReadSupported) {
-                    remainingForLibArchive += path
+                    remainingForLibArchive.add(path)
                 }
             }
         } else {

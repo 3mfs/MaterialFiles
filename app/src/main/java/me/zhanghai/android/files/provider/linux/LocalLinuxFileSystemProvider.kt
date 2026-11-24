@@ -100,10 +100,13 @@ class LocalLinuxFileSystemProvider(provider: LinuxFileSystemProvider) : FileSyst
             } catch (e: SyscallException) {
                 e.printStackTrace()
             }
+            MediaScanner.scan(file.toFile(), true)
+            return fileChannel
         }
-        val javaFile = file.toFile()
-        MediaScanner.scan(javaFile)
-        return MediaScanner.createScanOnCloseFileChannel(fileChannel, javaFile)
+        if (openOptions.write) {
+            return MediaScanner.createScanOnCloseFileChannel(fileChannel, file.toFile())
+        }
+        return fileChannel
     }
 
     @Throws(IOException::class)

@@ -16,8 +16,8 @@ enum class ArchiveCompressionLevel(
 ) {
     STORE(Deflater.NO_COMPRESSION, 0, 0),
     FAST(Deflater.BEST_SPEED, 1, 1),
-    NORMAL(Deflater.DEFAULT_COMPRESSION, 5, 6),
-    MAXIMUM(Deflater.BEST_COMPRESSION, 9, 9)
+    NORMAL(4, 3, 3),
+    MAXIMUM(Deflater.BEST_COMPRESSION, 7, 7)
 }
 
 enum class SevenZCompressionMethod(val libArchiveValue: String) {

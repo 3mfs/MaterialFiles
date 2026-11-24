@@ -82,7 +82,7 @@ internal object WinZipAes {
         return Encryptor(salt, keys)
     }
 
-    private class DerivedKeys(
+    internal class DerivedKeys(
         val aesKey: ByteArray,
         val hmacKey: ByteArray,
         val verifier: ByteArray
@@ -99,19 +99,30 @@ internal object WinZipAes {
             init(Cipher.ENCRYPT_MODE, SecretKeySpec(aesKey, "AES"))
         }
         private val counter = ByteArray(16)
-        private val keystream = ByteArray(16)
-        private var keystreamPos = 16
+        private val counterBatch = ByteArray(BATCH_SIZE)
+        private val keystream = ByteArray(BATCH_SIZE)
+        private var keystreamPos = BATCH_SIZE
+        private var keystreamLimit = BATCH_SIZE
 
         protected fun applyKeystream(buffer: ByteArray, offset: Int, length: Int) {
             var i = offset
             val end = offset + length
             while (i < end) {
-                if (keystreamPos == 16) {
-                    incrementLittleEndianCounter()
-                    cipher.doFinal(counter, 0, 16, keystream, 0)
+                if (keystreamPos >= keystreamLimit) {
+                    val remainingBytes = end - i
+                    val blocksNeeded = ((remainingBytes + 15) ushr 4).coerceIn(1, BATCH_BLOCKS)
+                    val batchBytes = blocksNeeded shl 4
+                    var bOff = 0
+                    while (bOff < batchBytes) {
+                        incrementLittleEndianCounter()
+                        System.arraycopy(counter, 0, counterBatch, bOff, 16)
+                        bOff += 16
+                    }
+                    cipher.update(counterBatch, 0, batchBytes, keystream, 0)
                     keystreamPos = 0
+                    keystreamLimit = batchBytes
                 }
-                val chunk = minOf(end - i, 16 - keystreamPos)
+                val chunk = minOf(end - i, keystreamLimit - keystreamPos)
                 for (j in 0 until chunk) {
                     buffer[i + j] = (buffer[i + j].toInt() xor keystream[keystreamPos + j].toInt()).toByte()
                 }
@@ -128,6 +139,11 @@ internal object WinZipAes {
                     break
                 }
             }
+        }
+
+        companion object {
+            private const val BATCH_BLOCKS = 256
+            private const val BATCH_SIZE = BATCH_BLOCKS * 16
         }
     }
 
