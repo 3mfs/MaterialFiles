@@ -1363,6 +1363,14 @@ class FileListFragment : Fragment(), BreadcrumbLayout.Listener, FileListAdapter.
         copyFile(file.createDummyArchiveRoot())
     }
 
+    override fun extractViaExtractionZone(file: FileItem) {
+        val jobId = FileJobService.extractionZone(
+            file.path, viewModel.currentPath, requireContext()
+        )
+        FileJobProgressDialogFragment.show(jobId, file.name, this)
+        viewModel.selectFile(file, false)
+    }
+
     override fun showCreateArchiveDialog(file: FileItem) {
         showCreateArchiveDialog(fileItemSetOf(file))
     }

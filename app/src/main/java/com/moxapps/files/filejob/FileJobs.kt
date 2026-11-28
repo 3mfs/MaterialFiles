@@ -885,9 +885,71 @@ class CopyFileJob(private val sources: List<Path>, private val targetDirectory: 
             throwIfInterrupted()
         }
     }
+}
 
+/**
+ * Stages a remote archive in a local temporary Extraction Zone, extracts it locally,
+ * and uploads the extracted contents back to [targetDirectory].
+ */
+class ExtractionZoneFileJob(
+    private val archiveFile: Path,
+    private val targetDirectory: Path
+) : FileJob() {
     @Throws(IOException::class)
-    private fun extractBatch(
+    override fun run() {
+        val zoneRootFile = File(
+            cacheDirectory, "extraction_zone/${System.currentTimeMillis()}_$id"
+        ).apply { mkdirs() }
+        val zoneRoot = Paths.get(zoneRootFile.path)
+        try {
+            val localArchive = zoneRoot.resolveForeign(getTargetFileName(archiveFile))
+            val downloadScan = scan(
+                archiveFile, R.plurals.file_job_copy_scan_notification_title_format
+            )
+            val downloadTransfer = TransferInfo(downloadScan, zoneRoot)
+            val downloaded = copy(
+                archiveFile, localArchive, false, downloadTransfer, ActionAllInfo(replace = true)
+            )
+            if (!downloaded) {
+                return
+            }
+            throwIfInterrupted()
+
+            val localExtractParent = zoneRoot.resolve("extracted")
+            localExtractParent.toFile().mkdirs()
+            val localArchiveRoot = localArchive.createArchiveRootPath()
+            val extractScan = scan(
+                localArchiveRoot, R.plurals.file_job_extract_scan_notification_title_format
+            )
+            val extractTransfer = TransferInfo(extractScan, localExtractParent)
+            extractBatch(
+                listOf(localArchiveRoot), localExtractParent, extractTransfer,
+                ActionAllInfo(replace = true)
+            )
+            throwIfInterrupted()
+
+            val extractedItems = localExtractParent.newDirectoryStream().use { it.toList() }
+            if (extractedItems.isEmpty()) {
+                return
+            }
+            val uploadScan = scan(
+                extractedItems, R.plurals.file_job_copy_scan_notification_title_format
+            )
+            val uploadTransfer = TransferInfo(uploadScan, targetDirectory)
+            val uploadActionAll = ActionAllInfo()
+            for (item in extractedItems) {
+                val target = targetDirectory.resolveForeign(getTargetFileName(item))
+                copyRecursively(item, target, false, uploadTransfer, uploadActionAll)
+                throwIfInterrupted()
+            }
+        } finally {
+            zoneRoot.toFile().deleteRecursively()
+        }
+    }
+}
+
+@Throws(IOException::class)
+private fun FileJob.extractBatch(
         sources: List<Path>,
         targetDirectory: Path,
         transferInfo: TransferInfo,
@@ -971,7 +1033,7 @@ class CopyFileJob(private val sources: List<Path>, private val targetDirectory: 
     }
 
     @Throws(IOException::class)
-    private fun extractStreamEntry(
+private fun FileJob.extractStreamEntry(
         source: Path,
         initialTarget: Path,
         entry: ReadArchive.Entry,
@@ -1127,7 +1189,7 @@ class CopyFileJob(private val sources: List<Path>, private val targetDirectory: 
     }
 
     @Throws(IOException::class)
-    private fun copyRecursively(
+private fun FileJob.copyRecursively(
         source: Path,
         target: Path,
         isExtract: Boolean,
@@ -1164,7 +1226,7 @@ class CopyFileJob(private val sources: List<Path>, private val targetDirectory: 
         })
     }
 
-    private fun getTargetPathForDuplicate(source: Path): Path {
+private fun FileJob.getTargetPathForDuplicate(source: Path): Path {
         source.asByteStringListPath()
         val sourceFileName = source.fileNameByteString!!
         // We do want to follow symbolic links here.
@@ -1187,7 +1249,7 @@ class CopyFileJob(private val sources: List<Path>, private val targetDirectory: 
         return source
     }
 
-    private fun getDuplicateCountInfo(fileName: ByteString, countEnd: Int): DuplicateCountInfo {
+private fun getDuplicateCountInfo(fileName: ByteString, countEnd: Int): DuplicateCountInfo {
         while (true) {
             // /(?<=.) \(\d+\)$/
             var index = countEnd - 1
@@ -1232,7 +1294,7 @@ class CopyFileJob(private val sources: List<Path>, private val targetDirectory: 
         return DuplicateCountInfo(countEnd, countEnd, 0)
     }
 
-    private fun setDuplicateCount(
+private fun setDuplicateCount(
         fileName: ByteString,
         countInfo: DuplicateCountInfo,
         count: Int
@@ -1243,8 +1305,7 @@ class CopyFileJob(private val sources: List<Path>, private val targetDirectory: 
             .toByteString()
     }
 
-    private class DuplicateCountInfo(val countStart: Int, val countEnd: Int, val count: Int)
-}
+private class DuplicateCountInfo(val countStart: Int, val countEnd: Int, val count: Int)
 
 @Throws(IOException::class)
 private fun FileJob.insertIntoZipBatch(

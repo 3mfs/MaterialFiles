@@ -171,6 +171,6 @@ class ModelViewerFragment : Fragment() {
     class Args(val intent: Intent) : ParcelableArgs
 
     companion object {
-        private const val MAX_VIEWER_TRIANGLES = 1_500_000
+        private const val MAX_VIEWER_TRIANGLES = 400_000
     }
 }

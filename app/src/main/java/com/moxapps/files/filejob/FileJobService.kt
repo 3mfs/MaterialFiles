@@ -132,6 +132,12 @@ class FileJobService : Service() {
             return job.id
         }
 
+        fun extractionZone(archiveFile: Path, targetDirectory: Path, context: Context): Int {
+            val job = ExtractionZoneFileJob(archiveFile, targetDirectory)
+            startJob(job, context)
+            return job.id
+        }
+
         fun create(path: Path, createDirectory: Boolean, context: Context) {
             startJob(CreateFileJob(path, createDirectory), context)
         }

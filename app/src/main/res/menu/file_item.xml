@@ -27,6 +27,10 @@
         android:title="@string/file_item_action_extract" />
 
     <item
+        android:id="@+id/action_extraction_zone"
+        android:title="@string/file_item_action_extraction_zone" />
+
+    <item
         android:id="@+id/action_archive"
         android:title="@string/file_item_action_archive" />
 
