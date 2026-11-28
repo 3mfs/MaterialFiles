@@ -1,6 +1,10 @@
 package com.moxapps.files.viewer.model
 
 import android.util.Log
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import java.io.BufferedInputStream
 import java.io.BufferedReader
@@ -158,6 +162,30 @@ object ModelMeshLoader {
         }
     }
 
+    fun extract3mfPlatePreview(file: File, plateNumber: Int = 1): ByteArray? {
+        ZipFile(file).use { zip ->
+            val candidates = listOf(
+                "metadata/plate_${plateNumber}.png",
+                "metadata/plate_1.png",
+                "metadata/thumbnail.png",
+                "thumbnails/thumbnail.png"
+            )
+            val entriesByName = mutableMapOf<String, java.util.zip.ZipEntry>()
+            val entries = zip.entries()
+            while (entries.hasMoreElements()) {
+                val entry = entries.nextElement()
+                if (entry.isDirectory) continue
+                entriesByName[entry.name.replace('\\', '/').trimStart('/').lowercase()] = entry
+            }
+            for (c in candidates) {
+                val match = entriesByName[c] ?: continue
+                val bytes = zip.getInputStream(match).use { it.readBytes() }
+                if (bytes.isNotEmpty()) return bytes
+            }
+        }
+        return null
+    }
+
     @Throws(IOException::class)
     fun load3mf(
         inputStream: InputStream,
@@ -265,13 +293,38 @@ object ModelMeshLoader {
             } else {
                 for ((id, _) in rootModel.objects) collectNeededPaths(rootModel, id, 0)
             }
-            for (path in neededPaths) {
-                val entry = modelEntries[path] ?: continue
-                zip.getInputStream(entry).use { entryStream ->
-                    parsedModels[path] = parse3mfModelXml(
-                        BufferedInputStream(entryStream, 64 * 1024),
-                        maxTriangles
-                    )
+            if (neededPaths.size > 1) {
+                val parsedExternal = runBlocking(Dispatchers.Default) {
+                    neededPaths.map { path ->
+                        async {
+                            ZipFile(file).use { workerZip ->
+                                val entry = workerZip.entries().asSequence().firstOrNull {
+                                    !it.isDirectory &&
+                                        it.name.replace('\\', '/').trimStart('/').lowercase() == path
+                                } ?: return@async null
+                                val model = workerZip.getInputStream(entry).use { entryStream ->
+                                    parse3mfModelXml(
+                                        BufferedInputStream(entryStream, 64 * 1024),
+                                        maxTriangles
+                                    )
+                                }
+                                path to model
+                            }
+                        }
+                    }.awaitAll()
+                }
+                for (pair in parsedExternal) {
+                    if (pair != null) parsedModels[pair.first] = pair.second
+                }
+            } else {
+                for (path in neededPaths) {
+                    val entry = modelEntries[path] ?: continue
+                    zip.getInputStream(entry).use { entryStream ->
+                        parsedModels[path] = parse3mfModelXml(
+                            BufferedInputStream(entryStream, 64 * 1024),
+                            maxTriangles
+                        )
+                    }
                 }
             }
         }

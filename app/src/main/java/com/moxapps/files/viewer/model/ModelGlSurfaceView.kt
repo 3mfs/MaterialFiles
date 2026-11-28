@@ -68,6 +68,13 @@ class ModelGlSurfaceView @JvmOverloads constructor(
         resetCamera()
     }
 
+    fun clearMesh() {
+        queueEvent {
+            renderer.clearMesh()
+            requestRender()
+        }
+    }
+
     fun setWireframe(enabled: Boolean) {
         queueEvent {
             renderer.wireframe = enabled
@@ -257,6 +264,14 @@ class ModelGlSurfaceView @JvmOverloads constructor(
             } else {
                 uploadMesh(mesh)
             }
+        }
+
+        fun clearMesh() {
+            pendingMesh = null
+            uploadedMeshRef = null
+            vertexCount = 0
+            lineVertexCount = 0
+            deleteBuffers()
         }
 
         private fun uploadMesh(mesh: ModelMesh) {

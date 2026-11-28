@@ -1,6 +1,7 @@
 package com.moxapps.files.viewer.model
 
 import android.content.Intent
+import android.graphics.BitmapFactory
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.Menu
@@ -98,6 +99,9 @@ class ModelViewerFragment : Fragment() {
         loadJob = viewLifecycleOwner.lifecycleScope.launch {
             binding.progress.isVisible = true
             binding.errorText.isVisible = false
+            binding.infoText.isVisible = false
+            binding.previewImage.isVisible = false
+            binding.glSurfaceView.clearMesh()
             val plateIdx = selectedPlateIndex
             val maxTriangles = Settings.MODEL_VIEWER_MAX_TRIANGLES.valueCompat.toIntOrNull()
                 ?.coerceAtLeast(100_000) ?: MAX_VIEWER_TRIANGLES
@@ -118,6 +122,17 @@ class ModelViewerFragment : Fragment() {
                             }
                             cached3mfFile = temp
                         }
+                        val plateNum = plates.getOrNull(plateIdx)?.id?.toIntOrNull() ?: (plateIdx + 1)
+                        val previewBytes = ModelMeshLoader.extract3mfPlatePreview(file, plateNum)
+                        if (previewBytes != null) {
+                            val bmp = BitmapFactory.decodeByteArray(previewBytes, 0, previewBytes.size)
+                            if (bmp != null) {
+                                withContext(Dispatchers.Main) {
+                                    binding.previewImage.setImageBitmap(bmp)
+                                    binding.previewImage.isVisible = true
+                                }
+                            }
+                        }
                         ModelMeshLoader.load3mfFile(file, maxTriangles, plateIdx)
                     } else {
                         val openStream = path?.newInputStream()
@@ -130,6 +145,8 @@ class ModelViewerFragment : Fragment() {
                 }
             }
             binding.progress.isVisible = false
+            binding.previewImage.isVisible = false
+            binding.previewImage.setImageDrawable(null)
             result.onSuccess { mesh ->
                 plates = mesh.plates
                 selectedPlateIndex = mesh.selectedPlateIndex
