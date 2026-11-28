@@ -83,4 +83,12 @@
     <bool name="pref_default_value_read_remote_files_for_thumbnail">true</bool>
     <string name="pref_key_hide_root_storage">key_hide_root_storage</string>
     <bool name="pref_default_value_hide_root_storage">false</bool>
+    <string name="pref_key_model_viewer_max_triangles">key_model_viewer_max_triangles</string>
+    <string name="pref_default_value_model_viewer_max_triangles">1200000</string>
+    <string-array name="pref_entry_values_model_viewer_max_triangles">
+        <item>500000</item>
+        <item>1200000</item>
+        <item>2500000</item>
+        <item>5000000</item>
+    </string-array>
 </resources>

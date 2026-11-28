@@ -5,6 +5,13 @@
     xmlns:app="http://schemas.android.com/apk/res-auto">
 
     <item
+        android:id="@+id/action_select_plate"
+        android:orderInCategory="50"
+        android:title="@string/model_viewer_plate_default"
+        android:visible="false"
+        app:showAsAction="always" />
+
+    <item
         android:id="@+id/action_reset_camera"
         android:icon="@drawable/reset_icon_white_24dp"
         android:orderInCategory="100"

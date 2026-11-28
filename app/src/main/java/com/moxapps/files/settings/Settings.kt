@@ -200,4 +200,10 @@ object Settings {
             R.string.pref_key_hide_root_storage,
             R.bool.pref_default_value_hide_root_storage
         )
+
+    val MODEL_VIEWER_MAX_TRIANGLES: SettingLiveData<String> =
+        StringSettingLiveData(
+            R.string.pref_key_model_viewer_max_triangles,
+            R.string.pref_default_value_model_viewer_max_triangles
+        )
 }

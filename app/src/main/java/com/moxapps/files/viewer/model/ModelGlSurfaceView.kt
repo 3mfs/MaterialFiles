@@ -202,15 +202,19 @@ class ModelGlSurfaceView @JvmOverloads constructor(
         private var program = 0
         private var posHandle = 0
         private var normalHandle = 0
+        private var colorHandle = 0
         private var mvpHandle = 0
         private var mvHandle = 0
-        private var colorHandle = 0
 
         private var vertexVbo = 0
         private var normalVbo = 0
+        private var colorVbo = 0
         private var lineVbo = 0
+        private var plateQuadVbo = 0
+        private var plateGridVbo = 0
         private var vertexCount = 0
         private var lineVertexCount = 0
+        private var plateGridVertexCount = 0
         private var meshRadius = 1f
         private var pendingMesh: ModelMesh? = null
 
@@ -219,7 +223,7 @@ class ModelGlSurfaceView @JvmOverloads constructor(
         private val mvpMatrix = FloatArray(16)
 
         override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
-            GLES20.glClearColor(0.07f, 0.09f, 0.11f, 1f)
+            GLES20.glClearColor(0.22f, 0.25f, 0.29f, 1f)
             GLES20.glEnable(GLES20.GL_DEPTH_TEST)
 
             val vShader = compileShader(GLES20.GL_VERTEX_SHADER, VERTEX_SHADER)
@@ -231,9 +235,9 @@ class ModelGlSurfaceView @JvmOverloads constructor(
             }
             posHandle = GLES20.glGetAttribLocation(program, "aPosition")
             normalHandle = GLES20.glGetAttribLocation(program, "aNormal")
+            colorHandle = GLES20.glGetAttribLocation(program, "aColor")
             mvpHandle = GLES20.glGetUniformLocation(program, "uMvpMatrix")
             mvHandle = GLES20.glGetUniformLocation(program, "uMvMatrix")
-            colorHandle = GLES20.glGetUniformLocation(program, "uBaseColor")
 
             pendingMesh?.let {
                 uploadMesh(it)
@@ -267,15 +271,66 @@ class ModelGlSurfaceView @JvmOverloads constructor(
             vertexVbo = buffers[0]
             normalVbo = buffers[1]
 
-            val vBuf = toFloatBuffer(mesh.vertices, vertexCount * 3)
-            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vertexVbo)
-            GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, vBuf.capacity() * 4, vBuf, GLES20.GL_STATIC_DRAW)
+            val vBuf = uploadFloatVbo(vertexVbo, mesh.vertices, vertexCount * 3)
+            val nBuf = uploadFloatVbo(normalVbo, mesh.normals, vertexCount * 3)
+            val _unused = vBuf + nBuf
 
-            val nBuf = toFloatBuffer(mesh.normals, vertexCount * 3)
-            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, normalVbo)
-            GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, nBuf.capacity() * 4, nBuf, GLES20.GL_STATIC_DRAW)
+            val meshColors = mesh.colors
+            if (meshColors != null && meshColors.size >= vertexCount * 3) {
+                val cIds = IntArray(1)
+                GLES20.glGenBuffers(1, cIds, 0)
+                colorVbo = cIds[0]
+                uploadByteVbo(colorVbo, meshColors, vertexCount * 3)
+            }
+
+            if (mesh.plateHalfSize > 0f) {
+                uploadBuildPlate(mesh.plateHalfSize, mesh.plateY)
+            }
 
             GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
+        }
+
+        private fun uploadBuildPlate(half: Float, plateY: Float) {
+            val quadY = plateY - 0.15f
+            val quadVerts = floatArrayOf(
+                -half, quadY, -half,
+                half, quadY, -half,
+                half, quadY, half,
+                -half, quadY, -half,
+                half, quadY, half,
+                -half, quadY, half
+            )
+            val qIds = IntArray(1)
+            GLES20.glGenBuffers(1, qIds, 0)
+            plateQuadVbo = qIds[0]
+            val qBuf = toFloatBuffer(quadVerts, quadVerts.size)
+            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, plateQuadVbo)
+            GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, qBuf.capacity() * 4, qBuf, GLES20.GL_STATIC_DRAW)
+
+            val step = when {
+                half <= 160f -> 10f
+                half <= 320f -> 20f
+                else -> 50f
+            }
+            val lines = ArrayList<Float>()
+            var pos = -half
+            while (pos <= half + 0.01f) {
+                val p = pos.coerceIn(-half, half)
+                // X-parallel line
+                lines.add(-half); lines.add(plateY); lines.add(p)
+                lines.add(half); lines.add(plateY); lines.add(p)
+                // Z-parallel line
+                lines.add(p); lines.add(plateY); lines.add(-half)
+                lines.add(p); lines.add(plateY); lines.add(half)
+                pos += step
+            }
+            plateGridVertexCount = lines.size / 3
+            val gIds = IntArray(1)
+            GLES20.glGenBuffers(1, gIds, 0)
+            plateGridVbo = gIds[0]
+            val gBuf = toFloatBuffer(lines.toFloatArray(), lines.size)
+            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, plateGridVbo)
+            GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, gBuf.capacity() * 4, gBuf, GLES20.GL_STATIC_DRAW)
         }
 
         private fun ensureLineVbo() {
@@ -328,7 +383,11 @@ class ModelGlSurfaceView @JvmOverloads constructor(
             val toDelete = mutableListOf<Int>()
             if (vertexVbo != 0) { toDelete += vertexVbo; vertexVbo = 0 }
             if (normalVbo != 0) { toDelete += normalVbo; normalVbo = 0 }
+            if (colorVbo != 0) { toDelete += colorVbo; colorVbo = 0 }
             if (lineVbo != 0) { toDelete += lineVbo; lineVbo = 0 }
+            if (plateQuadVbo != 0) { toDelete += plateQuadVbo; plateQuadVbo = 0 }
+            if (plateGridVbo != 0) { toDelete += plateGridVbo; plateGridVbo = 0 }
+            plateGridVertexCount = 0
             if (toDelete.isNotEmpty()) {
                 GLES20.glDeleteBuffers(toDelete.size, toDelete.toIntArray(), 0)
             }
@@ -365,10 +424,33 @@ class ModelGlSurfaceView @JvmOverloads constructor(
             GLES20.glUniformMatrix4fv(mvpHandle, 1, false, mvpMatrix, 0)
             GLES20.glUniformMatrix4fv(mvHandle, 1, false, modelViewMatrix, 0)
 
+            // Draw build plate & grid first when present
+            if (plateQuadVbo != 0) {
+                GLES20.glDisableVertexAttribArray(normalHandle)
+                GLES20.glVertexAttrib3f(normalHandle, 0f, 1f, 0f)
+                GLES20.glDisableVertexAttribArray(colorHandle)
+                GLES20.glVertexAttrib3f(colorHandle, 0.16f, 0.19f, 0.23f)
+                GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, plateQuadVbo)
+                GLES20.glEnableVertexAttribArray(posHandle)
+                GLES20.glVertexAttribPointer(posHandle, 3, GLES20.GL_FLOAT, false, 0, 0)
+                GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, 6)
+            }
+            if (plateGridVbo != 0 && plateGridVertexCount > 0) {
+                GLES20.glDisableVertexAttribArray(normalHandle)
+                GLES20.glVertexAttrib3f(normalHandle, 0f, 0f, 1f)
+                GLES20.glDisableVertexAttribArray(colorHandle)
+                GLES20.glVertexAttrib3f(colorHandle, 0.34f, 0.39f, 0.46f)
+                GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, plateGridVbo)
+                GLES20.glEnableVertexAttribArray(posHandle)
+                GLES20.glVertexAttribPointer(posHandle, 3, GLES20.GL_FLOAT, false, 0, 0)
+                GLES20.glDrawArrays(GLES20.GL_LINES, 0, plateGridVertexCount)
+            }
+
             if (wireframe) {
                 uploadLineVboIfNeeded()
                 if (lineVbo != 0 && lineVertexCount > 0) {
-                    GLES20.glUniform4f(colorHandle, 0.45f, 0.78f, 0.98f, 1f)
+                    GLES20.glDisableVertexAttribArray(colorHandle)
+                    GLES20.glVertexAttrib3f(colorHandle, 0.45f, 0.78f, 0.98f)
                     GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, lineVbo)
                     GLES20.glEnableVertexAttribArray(posHandle)
                     GLES20.glVertexAttribPointer(posHandle, 3, GLES20.GL_FLOAT, false, 0, 0)
@@ -377,7 +459,6 @@ class ModelGlSurfaceView @JvmOverloads constructor(
                     GLES20.glDrawArrays(GLES20.GL_LINES, 0, lineVertexCount)
                 }
             } else {
-                GLES20.glUniform4f(colorHandle, 0.38f, 0.64f, 0.85f, 1f)
                 GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vertexVbo)
                 GLES20.glEnableVertexAttribArray(posHandle)
                 GLES20.glVertexAttribPointer(posHandle, 3, GLES20.GL_FLOAT, false, 0, 0)
@@ -386,11 +467,21 @@ class ModelGlSurfaceView @JvmOverloads constructor(
                 GLES20.glEnableVertexAttribArray(normalHandle)
                 GLES20.glVertexAttribPointer(normalHandle, 3, GLES20.GL_FLOAT, false, 0, 0)
 
+                if (colorVbo != 0) {
+                    GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, colorVbo)
+                    GLES20.glEnableVertexAttribArray(colorHandle)
+                    GLES20.glVertexAttribPointer(colorHandle, 3, GLES20.GL_UNSIGNED_BYTE, true, 0, 0)
+                } else {
+                    GLES20.glDisableVertexAttribArray(colorHandle)
+                    GLES20.glVertexAttrib3f(colorHandle, 0.38f, 0.64f, 0.85f)
+                }
+
                 GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, vertexCount)
             }
 
             GLES20.glDisableVertexAttribArray(posHandle)
             GLES20.glDisableVertexAttribArray(normalHandle)
+            GLES20.glDisableVertexAttribArray(colorHandle)
             GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
         }
 
@@ -399,6 +490,42 @@ class ModelGlSurfaceView @JvmOverloads constructor(
             GLES20.glShaderSource(shader, source)
             GLES20.glCompileShader(shader)
             return shader
+        }
+
+        private fun uploadFloatVbo(vboId: Int, data: FloatArray, floatCount: Int): Int {
+            val totalBytes = floatCount * 4
+            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vboId)
+            GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, totalBytes, null, GLES20.GL_STATIC_DRAW)
+            val chunkFloats = 262_144 // 1 MB scratch buffer
+            val scratch = ByteBuffer.allocateDirect(chunkFloats * 4)
+                .order(ByteOrder.nativeOrder())
+                .asFloatBuffer()
+            var offset = 0
+            while (offset < floatCount) {
+                val count = minOf(chunkFloats, floatCount - offset)
+                scratch.clear()
+                scratch.put(data, offset, count)
+                scratch.flip()
+                GLES20.glBufferSubData(GLES20.GL_ARRAY_BUFFER, offset * 4, count * 4, scratch)
+                offset += count
+            }
+            return totalBytes
+        }
+
+        private fun uploadByteVbo(vboId: Int, data: ByteArray, byteCount: Int) {
+            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vboId)
+            GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, byteCount, null, GLES20.GL_STATIC_DRAW)
+            val chunkBytes = 1_048_576 // 1 MB scratch buffer
+            val scratch = ByteBuffer.allocateDirect(chunkBytes)
+            var offset = 0
+            while (offset < byteCount) {
+                val count = minOf(chunkBytes, byteCount - offset)
+                scratch.clear()
+                scratch.put(data, offset, count)
+                scratch.flip()
+                GLES20.glBufferSubData(GLES20.GL_ARRAY_BUFFER, offset, count, scratch)
+                offset += count
+            }
         }
 
         private fun toFloatBuffer(data: FloatArray, count: Int): FloatBuffer =
@@ -425,17 +552,20 @@ class ModelGlSurfaceView @JvmOverloads constructor(
             uniform mat4 uMvMatrix;
             attribute vec4 aPosition;
             attribute vec3 aNormal;
+            attribute vec3 aColor;
             varying vec3 vNormal;
+            varying vec3 vColor;
             void main() {
                 gl_Position = uMvpMatrix * aPosition;
                 vNormal = normalize(mat3(uMvMatrix) * aNormal);
+                vColor = aColor;
             }
         """
 
         private const val FRAGMENT_SHADER = """
             precision mediump float;
-            uniform vec4 uBaseColor;
             varying vec3 vNormal;
+            varying vec3 vColor;
             void main() {
                 vec3 n = normalize(vNormal);
                 if (!gl_FrontFacing) {
@@ -446,8 +576,8 @@ class ModelGlSurfaceView @JvmOverloads constructor(
                 float key = max(dot(n, keyDir), 0.0);
                 float fill = max(dot(n, fillDir), 0.0);
                 float rim = 1.0 - max(dot(n, vec3(0.0, 0.0, 1.0)), 0.0);
-                float light = 0.28 + 0.62 * key + 0.20 * fill + 0.08 * rim;
-                gl_FragColor = vec4(uBaseColor.rgb * clamp(light, 0.18, 1.1), uBaseColor.a);
+                float light = 0.45 + 0.55 * key + 0.25 * fill + 0.08 * rim;
+                gl_FragColor = vec4(vColor * clamp(light, 0.35, 1.05), 1.0);
             }
         """
     }

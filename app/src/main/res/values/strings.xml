@@ -728,8 +728,10 @@
     <string name="image_viewer_delete_message_format" translatable="false">@string/file_delete_message_file_format</string>
     <string name="model_viewer_title">3D Model viewer</string>
     <string name="model_viewer_info_format">%1$,d triangles • %2$.1f × %3$.1f × %4$.1f mm</string>
+    <string name="model_viewer_plate_size_format">Plate %1$.0f × %2$.0f mm</string>
     <string name="model_viewer_reset_camera">Reset view</string>
     <string name="model_viewer_toggle_wireframe">Wireframe</string>
+    <string name="model_viewer_plate_default">Plate 1</string>
     <string name="model_viewer_load_error">Failed to load 3D model</string>
     <string name="save_as_title">Save as</string>
     <string name="save_as_error">Error while saving file</string>
@@ -823,6 +825,13 @@
     <string name="settings_read_remote_files_for_thumbnail_title">Read remote files for thumbnail</string>
     <string name="settings_hide_root_storage_title">Hide Root in sidebar</string>
     <string name="settings_hide_root_storage_summary">Hide the Root storage entry from the navigation drawer</string>
+    <string name="settings_model_viewer_max_triangles_title">3D viewer max triangles</string>
+    <string-array name="settings_model_viewer_max_triangles_entries">
+        <item>500K (Low memory)</item>
+        <item>1.2M (Default)</item>
+        <item>2.5M (High detail)</item>
+        <item>5M (Maximum detail)</item>
+    </string-array>
 
     <string name="about_title">About</string>
     <string name="about_version_title">Version</string>

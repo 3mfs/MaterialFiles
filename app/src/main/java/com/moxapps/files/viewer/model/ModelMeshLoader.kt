@@ -1,5 +1,7 @@
 package com.moxapps.files.viewer.model
 
+import android.util.Log
+import org.json.JSONObject
 import java.io.BufferedInputStream
 import java.io.BufferedReader
 import java.io.EOFException
@@ -126,17 +128,8 @@ object ModelMeshLoader {
         return ModelMesh.fromCadTriangles(vertices, triCount)
     }
 
-    private inline fun <T> with3mfZipFile(inputStream: InputStream, block: (ZipFile) -> T): T {
-        val tempFile = File.createTempFile("model3mf_", ".3mf")
-        try {
-            tempFile.outputStream().use { out ->
-                inputStream.copyTo(out, 64 * 1024)
-            }
-            return ZipFile(tempFile).use(block)
-        } finally {
-            tempFile.delete()
-        }
-    }
+    private inline fun <T> with3mfZipFile(inputStream: InputStream, block: (ZipFile) -> T): T =
+        with3mfTempFile(inputStream) { file -> ZipFile(file).use(block) }
 
     fun extract3mfThumbnail(inputStream: InputStream): ByteArray? = with3mfZipFile(inputStream) { zip ->
         var bestPriority = Int.MAX_VALUE
@@ -166,29 +159,130 @@ object ModelMeshLoader {
     }
 
     @Throws(IOException::class)
-    fun load3mf(inputStream: InputStream, maxTriangles: Int = Int.MAX_VALUE): ModelMesh {
+    fun load3mf(
+        inputStream: InputStream,
+        maxTriangles: Int = Int.MAX_VALUE,
+        plateIndex: Int = 0
+    ): ModelMesh = with3mfTempFile(inputStream) { file ->
+        load3mfFile(file, maxTriangles, plateIndex)
+    }
+
+    private inline fun <T> with3mfTempFile(inputStream: InputStream, block: (File) -> T): T {
+        val tempFile = File.createTempFile("model3mf_", ".3mf")
+        try {
+            tempFile.outputStream().use { out ->
+                inputStream.copyTo(out, 64 * 1024)
+            }
+            return block(tempFile)
+        } finally {
+            tempFile.delete()
+        }
+    }
+
+    @Throws(IOException::class)
+    fun load3mfFile(
+        file: File,
+        maxTriangles: Int = Int.MAX_VALUE,
+        plateIndex: Int = 0
+    ): ModelMesh {
         val parsedModels = mutableMapOf<String, ThreeMfModel>()
+        var bambuFilamentColors: IntArray = IntArray(0)
+        var modelSettings = BambuModelSettings(emptyMap(), emptyList())
         var totalEntries = 0
-        with3mfZipFile(inputStream) { zip ->
+        val modelEntries = mutableMapOf<String, java.util.zip.ZipEntry>()
+        ZipFile(file).use { zip ->
             val entries = zip.entries()
             while (entries.hasMoreElements()) {
                 val entry = entries.nextElement()
                 totalEntries++
                 if (entry.isDirectory) continue
                 val normalized = entry.name.replace('\\', '/').trimStart('/').lowercase()
-                if (normalized.endsWith(".model")) {
-                    zip.getInputStream(entry).use { entryStream ->
-                        parsedModels[normalized] = parse3mfModelXml(
-                            BufferedInputStream(entryStream, 64 * 1024),
-                            maxTriangles
-                        )
+                when {
+                    normalized == "metadata/project_settings.config" -> {
+                        val jsonText = zip.getInputStream(entry).use {
+                            it.bufferedReader(Charsets.UTF_8).readText()
+                        }
+                        bambuFilamentColors = parseBambuFilamentColors(jsonText)
+                    }
+                    normalized == "metadata/model_settings.config" -> {
+                        val xmlText = zip.getInputStream(entry).use {
+                            it.bufferedReader(Charsets.UTF_8).readText()
+                        }
+                        modelSettings = parseBambuModelSettings(xmlText)
+                    }
+                    normalized.endsWith(".model") -> {
+                        modelEntries[normalized] = entry
                     }
                 }
             }
+            if (modelEntries.isEmpty()) {
+                throw IOException("No .model files found in 3MF archive ($totalEntries entries)")
+            }
+            val rootKey = if (modelEntries.containsKey("3d/3dmodel.model")) {
+                "3d/3dmodel.model"
+            } else {
+                modelEntries.keys.first()
+            }
+            val rootModel = zip.getInputStream(modelEntries[rootKey]!!).use { entryStream ->
+                parse3mfModelXml(BufferedInputStream(entryStream, 64 * 1024), maxTriangles)
+            }
+            parsedModels[rootKey] = rootModel
+
+            val plates = modelSettings.plates
+            val safePlateIndex = if (plates.isNotEmpty()) {
+                plateIndex.coerceIn(0, plates.lastIndex)
+            } else {
+                0
+            }
+            val selectedPlateObjectIds = plates.getOrNull(safePlateIndex)?.objectIds ?: emptySet()
+            val plateItems = if (rootModel.buildItems.isNotEmpty()) {
+                if (selectedPlateObjectIds.isNotEmpty()) {
+                    rootModel.buildItems.filter { it.objectId in selectedPlateObjectIds }
+                        .ifEmpty { rootModel.buildItems }
+                } else {
+                    rootModel.buildItems
+                }
+            } else {
+                emptyList()
+            }
+
+            // Only parse external .model files referenced by the selected plate
+            val neededPaths = mutableSetOf<String>()
+            fun collectNeededPaths(model: ThreeMfModel, objectId: String, depth: Int) {
+                if (depth > 16) return
+                val obj = model.objects[objectId] ?: return
+                for (comp in obj.components) {
+                    val cp = comp.path?.trimStart('/')?.lowercase()
+                    if (cp != null && cp != rootKey && cp in modelEntries) {
+                        neededPaths.add(cp)
+                    } else {
+                        collectNeededPaths(model, comp.objectId, depth + 1)
+                    }
+                }
+            }
+            if (plateItems.isNotEmpty()) {
+                for (item in plateItems) collectNeededPaths(rootModel, item.objectId, 0)
+            } else {
+                for ((id, _) in rootModel.objects) collectNeededPaths(rootModel, id, 0)
+            }
+            for (path in neededPaths) {
+                val entry = modelEntries[path] ?: continue
+                zip.getInputStream(entry).use { entryStream ->
+                    parsedModels[path] = parse3mfModelXml(
+                        BufferedInputStream(entryStream, 64 * 1024),
+                        maxTriangles
+                    )
+                }
+            }
         }
-        if (parsedModels.isEmpty()) {
-            throw IOException("No .model files found in 3MF archive ($totalEntries entries)")
+        val objectExtruders = modelSettings.objectExtruders
+        val plates = modelSettings.plates
+        val safePlateIndex = if (plates.isNotEmpty()) {
+            plateIndex.coerceIn(0, plates.lastIndex)
+        } else {
+            0
         }
+        val selectedPlateObjectIds = plates.getOrNull(safePlateIndex)?.objectIds ?: emptySet()
 
         val rootKey = when {
             parsedModels.containsKey("3d/3dmodel.model") -> "3d/3dmodel.model"
@@ -196,7 +290,37 @@ object ModelMeshLoader {
         }
         val rootModel = parsedModels[rootKey]!!
 
-        val collector = TriangleCollector(maxTriangles)
+        fun countTriangles(model: ThreeMfModel, objectId: String, depth: Int): Int {
+            if (depth > 16) return 0
+            val obj = model.objects[objectId] ?: return 0
+            var total = (obj.meshIndices?.size ?: 0) / 3
+            for (comp in obj.components) {
+                val targetModel = if (comp.path != null) {
+                    parsedModels[comp.path.trimStart('/').lowercase()] ?: model
+                } else {
+                    model
+                }
+                total += countTriangles(targetModel, comp.objectId, depth + 1)
+            }
+            return total
+        }
+        val plateItems = if (rootModel.buildItems.isNotEmpty()) {
+            if (selectedPlateObjectIds.isNotEmpty()) {
+                rootModel.buildItems.filter { it.objectId in selectedPlateObjectIds }
+                    .ifEmpty { rootModel.buildItems }
+            } else {
+                rootModel.buildItems
+            }
+        } else {
+            emptyList()
+        }
+        val expectedTriangles = if (plateItems.isNotEmpty()) {
+            plateItems.sumOf { countTriangles(rootModel, it.objectId, 0) }
+        } else {
+            rootModel.objects.keys.sumOf { countTriangles(rootModel, it, 0) }
+        }.coerceAtMost(maxTriangles)
+
+        val collector = TriangleCollector(maxTriangles, expectedTriangles)
         val identity = floatArrayOf(
             1f, 0f, 0f,
             0f, 1f, 0f,
@@ -204,11 +328,32 @@ object ModelMeshLoader {
             0f, 0f, 0f
         )
 
-        fun emitObject(model: ThreeMfModel, objectId: String, transform: FloatArray, depth: Int) {
+        fun emitObject(
+            model: ThreeMfModel,
+            objectId: String,
+            transform: FloatArray,
+            inheritedExtruder: Int,
+            depth: Int
+        ) {
             if (depth > 16) return
             val obj = model.objects[objectId] ?: return
+            val objExtruder = objectExtruders[objectId] ?: inheritedExtruder
+            val objFallbackColor = when {
+                obj.defaultColor != -1 -> obj.defaultColor
+                objExtruder > 0 && objExtruder <= bambuFilamentColors.size ->
+                    bambuFilamentColors[objExtruder - 1]
+                else -> -1
+            }
             if (obj.meshVertices != null && obj.meshIndices != null) {
-                collector.addIndexedMesh(obj.meshVertices, obj.meshIndices, transform)
+                collector.addIndexedMesh(
+                    meshVerts = obj.meshVertices,
+                    indices = obj.meshIndices,
+                    m = transform,
+                    triColors = obj.meshTriColors,
+                    triPaintExtruders = obj.meshPaintExtruders,
+                    bambuFilamentColors = bambuFilamentColors,
+                    fallbackColor = objFallbackColor
+                )
             }
             for (comp in obj.components) {
                 val targetModel = if (comp.path != null) {
@@ -221,18 +366,24 @@ object ModelMeshLoader {
                 } else {
                     transform
                 }
-                emitObject(targetModel, comp.objectId, combined, depth + 1)
+                emitObject(targetModel, comp.objectId, combined, objExtruder, depth + 1)
             }
         }
 
         if (rootModel.buildItems.isNotEmpty()) {
-            for (item in rootModel.buildItems) {
+            val plateItems = if (selectedPlateObjectIds.isNotEmpty()) {
+                rootModel.buildItems.filter { it.objectId in selectedPlateObjectIds }
+                    .ifEmpty { rootModel.buildItems }
+            } else {
+                rootModel.buildItems
+            }
+            for (item in plateItems) {
                 val xform = item.transform ?: identity
-                emitObject(rootModel, item.objectId, xform, 0)
+                emitObject(rootModel, item.objectId, xform, 0, 0)
             }
         } else {
             for ((id, _) in rootModel.objects) {
-                emitObject(rootModel, id, identity, 0)
+                emitObject(rootModel, id, identity, 0, 0)
             }
         }
         parsedModels.clear()
@@ -240,14 +391,35 @@ object ModelMeshLoader {
         if (collector.triangleCount == 0) {
             throw IOException("No mesh triangles found in 3MF archive")
         }
-        return ModelMesh.fromCadTriangles(collector.vertices, collector.triangleCount)
+        return ModelMesh.fromCadTriangles(
+            rawVertices = collector.vertices,
+            triangleCount = collector.triangleCount,
+            rawColors = if (collector.hasColors) collector.colors else null,
+            showBuildPlate = true,
+            plateBedSize = 256f,
+            plates = plates,
+            selectedPlateIndex = safePlateIndex
+        )
     }
 
-    private class TriangleCollector(private val maxTriangles: Int) {
-        var vertices = FloatArray(4096 * 9)
+    private class TriangleCollector(
+        private val maxTriangles: Int,
+        expectedTriangles: Int = 4096
+    ) {
+        var vertices = FloatArray(expectedTriangles.coerceAtLeast(1) * 9)
+        var colors = ByteArray(0)
+        var hasColors = false
         var triangleCount = 0
 
-        fun addIndexedMesh(meshVerts: FloatArray, indices: IntArray, m: FloatArray) {
+        fun addIndexedMesh(
+            meshVerts: FloatArray,
+            indices: IntArray,
+            m: FloatArray,
+            triColors: IntArray? = null,
+            triPaintExtruders: ShortArray? = null,
+            bambuFilamentColors: IntArray = IntArray(0),
+            fallbackColor: Int = -1
+        ) {
             val triTotal = indices.size / 3
             val remainingBudget = (maxTriangles - triangleCount).coerceAtLeast(0)
             if (remainingBudget == 0) return
@@ -256,6 +428,21 @@ object ModelMeshLoader {
             } else {
                 1
             }
+            val meshHasAnyColor = triColors != null || triPaintExtruders != null || fallbackColor != -1
+            if (meshHasAnyColor && !hasColors) {
+                hasColors = true
+                colors = ByteArray(vertices.size)
+                // Backfill any previously emitted uncolored triangles with default color
+                var p = 0
+                val prevBytes = triangleCount * 9
+                while (p < prevBytes) {
+                    colors[p] = DEFAULT_COLOR_R
+                    colors[p + 1] = DEFAULT_COLOR_G
+                    colors[p + 2] = DEFAULT_COLOR_B
+                    p += 3
+                }
+            }
+
             for (t in 0 until triTotal step stride) {
                 if (triangleCount >= maxTriangles) break
                 val i0 = indices[t * 3] * 3
@@ -274,11 +461,31 @@ object ModelMeshLoader {
                     val nextLen = (vertices.size + (vertices.size ushr 1)).coerceAtLeast(needed)
                         .coerceAtMost(maxLen)
                     vertices = vertices.copyOf(nextLen)
+                    if (hasColors) {
+                        colors = colors.copyOf(nextLen)
+                    }
                 }
                 val out = triangleCount * 9
                 transformPoint(meshVerts, i0, m, vertices, out)
                 transformPoint(meshVerts, i1, m, vertices, out + 3)
                 transformPoint(meshVerts, i2, m, vertices, out + 6)
+                if (hasColors) {
+                    val paintExt = triPaintExtruders?.getOrNull(t)?.toInt() ?: 0
+                    val rgb = when {
+                        paintExt > 0 && paintExt <= bambuFilamentColors.size ->
+                            bambuFilamentColors[paintExt - 1]
+                        triColors != null && t < triColors.size && triColors[t] != -1 ->
+                            triColors[t]
+                        fallbackColor != -1 -> fallbackColor
+                        else -> DEFAULT_MODEL_COLOR
+                    }
+                    val r = ((rgb ushr 16) and 0xFF).toByte()
+                    val g = ((rgb ushr 8) and 0xFF).toByte()
+                    val b = (rgb and 0xFF).toByte()
+                    colors[out] = r; colors[out + 1] = g; colors[out + 2] = b
+                    colors[out + 3] = r; colors[out + 4] = g; colors[out + 5] = b
+                    colors[out + 6] = r; colors[out + 7] = g; colors[out + 8] = b
+                }
                 triangleCount++
             }
         }
@@ -321,6 +528,9 @@ object ModelMeshLoader {
     private class ThreeMfObject(
         val meshVertices: FloatArray?,
         val meshIndices: IntArray?,
+        val meshTriColors: IntArray?,
+        val meshPaintExtruders: ShortArray?,
+        val defaultColor: Int,
         val components: List<ThreeMfComponent>
     )
 
@@ -337,15 +547,22 @@ object ModelMeshLoader {
     private fun parse3mfModelXml(xmlStream: InputStream, maxTriangles: Int): ThreeMfModel {
         val objects = mutableMapOf<String, ThreeMfObject>()
         val buildItems = mutableListOf<ThreeMfBuildItem>()
+        val materialGroups = mutableMapOf<String, MutableList<Int>>()
+        var currentGroupColors: MutableList<Int>? = null
 
         var currentObjectId: String? = null
+        var currentObjectDefaultColor = -1
         var verts = FloatArray(1024 * 3)
         var vertCount = 0
         var tris = IntArray(1024 * 3)
+        var triColors = IntArray(0)
+        var hasTriColors = false
+        var triPaintExtruders = ShortArray(0)
+        var hasPaintExtruders = false
         var triCount = 0
         var seenTris = 0
         var parseStride = 1
-        val maxStoredTris = if (maxTriangles < Int.MAX_VALUE / 2) maxTriangles * 2 else Int.MAX_VALUE
+        val maxStoredTris = maxTriangles
         var components = mutableListOf<ThreeMfComponent>()
         var inMesh = false
 
@@ -396,6 +613,10 @@ object ModelMeshLoader {
                                 while (p < tagLen && tagBuf[p].toInt() > 32) p++
                                 val localStart = findLocalNameStart(tagBuf, nameStart, p)
                                 when {
+                                    equalsAscii(tagBuf, localStart, p, "basematerials") ||
+                                        equalsAscii(tagBuf, localStart, p, "colorgroup") -> {
+                                        currentGroupColors = null
+                                    }
                                     equalsAscii(tagBuf, localStart, p, "mesh") -> inMesh = false
                                     equalsAscii(tagBuf, localStart, p, "object") -> {
                                         val id = currentObjectId
@@ -403,11 +624,16 @@ object ModelMeshLoader {
                                             objects[id] = ThreeMfObject(
                                                 meshVertices = if (vertCount > 0) verts.copyOf(vertCount * 3) else null,
                                                 meshIndices = if (triCount > 0) tris.copyOf(triCount * 3) else null,
+                                                meshTriColors = if (hasTriColors && triCount > 0) triColors.copyOf(triCount) else null,
+                                                meshPaintExtruders = if (hasPaintExtruders && triCount > 0) triPaintExtruders.copyOf(triCount) else null,
+                                                defaultColor = currentObjectDefaultColor,
                                                 components = components
                                             )
                                         }
                                         verts = FloatArray(0)
                                         tris = IntArray(0)
+                                        triColors = IntArray(0)
+                                        triPaintExtruders = ShortArray(0)
                                         currentObjectId = null
                                     }
                                 }
@@ -464,6 +690,9 @@ object ModelMeshLoader {
                                             var v1 = -1
                                             var v2 = -1
                                             var v3 = -1
+                                            var triPid: String? = null
+                                            var triP1 = -1
+                                            var paintExt = 0
                                             var pos = nameEnd
                                             while (pos < tagLen) {
                                                 while (pos < tagLen && (tagBuf[pos].toInt() and 0xFF) <= 32) pos++
@@ -483,6 +712,9 @@ object ModelMeshLoader {
                                                     equalsAscii(tagBuf, aLocal, aEnd, "v1") -> v1 = parseAsciiInt(tagBuf, vStart, vEnd)
                                                     equalsAscii(tagBuf, aLocal, aEnd, "v2") -> v2 = parseAsciiInt(tagBuf, vStart, vEnd)
                                                     equalsAscii(tagBuf, aLocal, aEnd, "v3") -> v3 = parseAsciiInt(tagBuf, vStart, vEnd)
+                                                    equalsAscii(tagBuf, aLocal, aEnd, "p1") -> triP1 = parseAsciiInt(tagBuf, vStart, vEnd)
+                                                    equalsAscii(tagBuf, aLocal, aEnd, "pid") -> triPid = String(tagBuf, vStart, vEnd - vStart, Charsets.UTF_8)
+                                                    equalsAscii(tagBuf, aLocal, aEnd, "paint_color") -> paintExt = decodeBambuPaintColorExtruder(tagBuf, vStart, vEnd)
                                                 }
                                             }
                                             if (v1 >= 0 && v2 >= 0 && v3 >= 0) {
@@ -496,6 +728,12 @@ object ModelMeshLoader {
                                                         tris[dBase] = tris[sBase]
                                                         tris[dBase + 1] = tris[sBase + 1]
                                                         tris[dBase + 2] = tris[sBase + 2]
+                                                        if (hasTriColors && src < triColors.size) {
+                                                            triColors[dst] = triColors[src]
+                                                        }
+                                                        if (hasPaintExtruders && src < triPaintExtruders.size) {
+                                                            triPaintExtruders[dst] = triPaintExtruders[src]
+                                                        }
                                                         dst++
                                                         src += 2
                                                     }
@@ -507,6 +745,33 @@ object ModelMeshLoader {
                                                     val nextLen = (tris.size + (tris.size ushr 1)).coerceAtLeast(needed)
                                                     tris = tris.copyOf(nextLen)
                                                 }
+                                                val resolvedTriColor = if (triPid != null && triP1 >= 0) {
+                                                    materialGroups[triPid]?.getOrNull(triP1) ?: -1
+                                                } else {
+                                                    -1
+                                                }
+                                                if (resolvedTriColor != -1 && !hasTriColors) {
+                                                    hasTriColors = true
+                                                    triColors = IntArray(tris.size / 3) { -1 }
+                                                }
+                                                if (hasTriColors) {
+                                                    if (triCount >= triColors.size) {
+                                                        val oldLen = triColors.size
+                                                        triColors = triColors.copyOf(tris.size / 3)
+                                                        for (k in oldLen until triColors.size) triColors[k] = -1
+                                                    }
+                                                    triColors[triCount] = resolvedTriColor
+                                                }
+                                                if (paintExt > 0 && !hasPaintExtruders) {
+                                                    hasPaintExtruders = true
+                                                    triPaintExtruders = ShortArray(tris.size / 3)
+                                                }
+                                                if (hasPaintExtruders) {
+                                                    if (triCount >= triPaintExtruders.size) {
+                                                        triPaintExtruders = triPaintExtruders.copyOf(tris.size / 3)
+                                                    }
+                                                    triPaintExtruders[triCount] = paintExt.toShort()
+                                                }
                                                 val base = triCount * 3
                                                 tris[base] = v1
                                                 tris[base + 1] = v2
@@ -515,13 +780,42 @@ object ModelMeshLoader {
                                             }
                                         }
                                     }
+                                    equalsAscii(tagBuf, localStart, nameEnd, "basematerials") ||
+                                        equalsAscii(tagBuf, localStart, nameEnd, "colorgroup") -> {
+                                        val gid = findAsciiAttr(tagBuf, nameEnd, tagLen, "id")
+                                        currentGroupColors = if (gid != null) {
+                                            materialGroups.getOrPut(gid) { mutableListOf() }
+                                        } else {
+                                            null
+                                        }
+                                    }
+                                    equalsAscii(tagBuf, localStart, nameEnd, "base") ||
+                                        equalsAscii(tagBuf, localStart, nameEnd, "color") -> {
+                                        val group = currentGroupColors
+                                        if (group != null) {
+                                            val hex = findAsciiAttr(tagBuf, nameEnd, tagLen, "displaycolor")
+                                                ?: findAsciiAttr(tagBuf, nameEnd, tagLen, "color")
+                                            group.add(parseHexColor(hex))
+                                        }
+                                    }
                                     equalsAscii(tagBuf, localStart, nameEnd, "mesh") -> inMesh = true
                                     equalsAscii(tagBuf, localStart, nameEnd, "object") -> {
                                         currentObjectId = findAsciiAttr(tagBuf, nameEnd, tagLen, "id")
+                                        val objPid = findAsciiAttr(tagBuf, nameEnd, tagLen, "pid")
+                                        val objPindex = findAsciiAttr(tagBuf, nameEnd, tagLen, "pindex")?.toIntOrNull() ?: 0
+                                        currentObjectDefaultColor = if (objPid != null) {
+                                            materialGroups[objPid]?.getOrNull(objPindex) ?: -1
+                                        } else {
+                                            -1
+                                        }
                                         if (verts.isEmpty()) verts = FloatArray(1024 * 3)
                                         vertCount = 0
                                         if (tris.isEmpty()) tris = IntArray(1024 * 3)
                                         triCount = 0
+                                        hasTriColors = false
+                                        triColors = IntArray(0)
+                                        hasPaintExtruders = false
+                                        triPaintExtruders = ShortArray(0)
                                         seenTris = 0
                                         parseStride = 1
                                         components = mutableListOf()
@@ -691,5 +985,135 @@ object ModelMeshLoader {
         }
     }
 
+    private fun parseBambuFilamentColors(jsonText: String): IntArray {
+        return try {
+            val obj = JSONObject(jsonText)
+            val arr = obj.optJSONArray("filament_colour")
+                ?: obj.optJSONArray("default_filament_colour")
+                ?: return IntArray(0)
+            IntArray(arr.length()) { i -> parseHexColor(arr.optString(i)) }
+        } catch (_: Exception) {
+            IntArray(0)
+        }
+    }
+
+    private class BambuModelSettings(
+        val objectExtruders: Map<String, Int>,
+        val plates: List<ThreeMfPlateInfo>
+    )
+
+    private fun parseBambuModelSettings(xmlText: String): BambuModelSettings {
+        val objectExtruders = mutableMapOf<String, Int>()
+        val plates = mutableListOf<ThreeMfPlateInfo>()
+        try {
+            val parser = android.util.Xml.newPullParser()
+            parser.setInput(java.io.StringReader(xmlText))
+            var currentObjId: String? = null
+            var inPlate = false
+            var inModelInstance = false
+            var currentPlateId: String? = null
+            var currentPlateName: String? = null
+            val currentPlateObjects = mutableSetOf<String>()
+            var event = parser.eventType
+            while (event != org.xmlpull.v1.XmlPullParser.END_DOCUMENT) {
+                when (event) {
+                    org.xmlpull.v1.XmlPullParser.START_TAG -> when (parser.name) {
+                        "object" -> if (!inPlate) {
+                            currentObjId = parser.getAttributeValue(null, "id")
+                        }
+                        "plate" -> {
+                            inPlate = true
+                            currentPlateId = null
+                            currentPlateName = null
+                            currentPlateObjects.clear()
+                        }
+                        "model_instance" -> if (inPlate) {
+                            inModelInstance = true
+                        }
+                        "metadata" -> {
+                            val key = parser.getAttributeValue(null, "key")
+                            val value = parser.getAttributeValue(null, "value")
+                            when {
+                                currentObjId != null && key == "extruder" -> {
+                                    value?.toIntOrNull()?.let { ext ->
+                                        objectExtruders[currentObjId] = ext
+                                    }
+                                }
+                                inModelInstance && key == "object_id" && value != null -> {
+                                    currentPlateObjects.add(value)
+                                }
+                                inPlate && !inModelInstance && key == "plater_id" -> {
+                                    currentPlateId = value
+                                }
+                                inPlate && !inModelInstance && key == "plater_name" -> {
+                                    currentPlateName = value?.takeIf { it.isNotBlank() }
+                                }
+                            }
+                        }
+                    }
+                    org.xmlpull.v1.XmlPullParser.END_TAG -> when (parser.name) {
+                        "object" -> if (!inPlate) {
+                            currentObjId = null
+                        }
+                        "model_instance" -> inModelInstance = false
+                        "plate" -> {
+                            if (currentPlateObjects.isNotEmpty()) {
+                                val id = currentPlateId ?: (plates.size + 1).toString()
+                                val label = currentPlateName?.let { "Plate $id ($it)" } ?: "Plate $id"
+                                plates.add(
+                                    ThreeMfPlateInfo(
+                                        id = id,
+                                        label = label,
+                                        objectIds = currentPlateObjects.toSet()
+                                    )
+                                )
+                            }
+                            inPlate = false
+                            inModelInstance = false
+                        }
+                    }
+                }
+                event = parser.next()
+            }
+        } catch (_: Exception) {
+        }
+        return BambuModelSettings(objectExtruders, plates)
+    }
+
+    private fun parseHexColor(hex: String?): Int {
+        if (hex.isNullOrBlank()) return -1
+        val clean = hex.trim().removePrefix("#")
+        if (clean.length < 6) return -1
+        return clean.substring(0, 6).toIntOrNull(16) ?: -1
+    }
+
+    private fun decodeBambuPaintColorExtruder(buf: ByteArray, start: Int, end: Int): Int {
+        if (start >= end) return 0
+        // Bambu/Prusa paint_color hex: single-state leaf has low 2 bits == 0, upper bits = 1-based extruder.
+        var valAcc = 0
+        var nibbles = 0
+        var p = start
+        while (p < end && nibbles < 4) {
+            val c = buf[p++].toInt() and 0xFF
+            val d = when (c) {
+                in '0'.code..'9'.code -> c - '0'.code
+                in 'a'.code..'f'.code -> c - 'a'.code + 10
+                in 'A'.code..'F'.code -> c - 'A'.code + 10
+                else -> -1
+            }
+            if (d >= 0) {
+                valAcc = (valAcc shl 4) or d
+                nibbles++
+            }
+        }
+        if (nibbles == 0) return 0
+        val ext = valAcc ushr 2
+        return if (ext > 0) ext else 0
+    }
+
     private val WHITESPACE_REGEX = Regex("\\s+")
+    private const val DEFAULT_MODEL_COLOR = 0x60A0D0
+    private const val DEFAULT_COLOR_R: Byte = 0x60.toByte()
+    private const val DEFAULT_COLOR_G: Byte = 0xA0.toByte()
+    private const val DEFAULT_COLOR_B: Byte = 0xD0.toByte()
 }

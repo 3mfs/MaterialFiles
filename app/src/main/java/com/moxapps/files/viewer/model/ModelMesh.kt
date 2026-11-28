@@ -3,6 +3,12 @@ package com.moxapps.files.viewer.model
 import kotlin.math.max
 import kotlin.math.sqrt
 
+data class ThreeMfPlateInfo(
+    val id: String,
+    val label: String,
+    val objectIds: Set<String>
+)
+
 class ModelMesh(
     /** Centered Y-up vertices: 9 floats per triangle (x0, y0, z0, x1, y1, z1, x2, y2, z2). */
     val vertices: FloatArray,
@@ -13,7 +19,17 @@ class ModelMesh(
     val cadSizeX: Float,
     val cadSizeY: Float,
     val cadSizeZ: Float,
-    val boundingRadius: Float
+    val boundingRadius: Float,
+    /** Optional per-vertex RGB bytes (UnsignedByte, 9 bytes per triangle). */
+    val colors: ByteArray? = null,
+    /** GL Y coordinate of the build plate surface (when [plateHalfSize] > 0). */
+    val plateY: Float = 0f,
+    /** Half-width of the build plate in CAD units (mm), or 0 if no plate should be drawn. */
+    val plateHalfSize: Float = 0f,
+    /** Available 3MF plates when the file defines multiple plates. */
+    val plates: List<ThreeMfPlateInfo> = emptyList(),
+    /** Currently selected plate index in [plates]. */
+    val selectedPlateIndex: Int = 0
 ) {
     companion object {
         /**
@@ -22,7 +38,12 @@ class ModelMesh(
          */
         fun fromCadTriangles(
             rawVertices: FloatArray,
-            triangleCount: Int
+            triangleCount: Int,
+            rawColors: ByteArray? = null,
+            showBuildPlate: Boolean = false,
+            plateBedSize: Float = 256f,
+            plates: List<ThreeMfPlateInfo> = emptyList(),
+            selectedPlateIndex: Int = 0
         ): ModelMesh {
             if (triangleCount <= 0) {
                 return ModelMesh(
@@ -58,7 +79,7 @@ class ModelMesh(
             val centerY = (minY + maxY) * 0.5f
             val centerZ = (minZ + maxZ) * 0.5f
 
-            val vertices = FloatArray(floatCount)
+            val vertices = if (rawVertices.size == floatCount) rawVertices else FloatArray(floatCount)
             val normals = FloatArray(floatCount)
             var maxDistSq = 0f
 
@@ -125,7 +146,20 @@ class ModelMesh(
                 t += 9
             }
 
-            val radius = sqrt(maxDistSq).coerceAtLeast(1e-4f)
+            val plateHalfSize = if (showBuildPlate) {
+                max(plateBedSize * 0.5f, max(cadSizeX, cadSizeY) * 0.65f)
+            } else {
+                0f
+            }
+            val plateZ = if (minZ in -1f..20f) 0f else minZ
+            val plateY = plateZ - centerZ
+            val radius = max(
+                sqrt(maxDistSq).coerceAtLeast(1e-4f),
+                if (showBuildPlate) plateHalfSize * 0.55f else 0f
+            )
+            val finalColors = rawColors?.let {
+                if (it.size == floatCount) it else it.copyOf(floatCount)
+            }
             return ModelMesh(
                 vertices = vertices,
                 normals = normals,
@@ -133,7 +167,12 @@ class ModelMesh(
                 cadSizeX = cadSizeX,
                 cadSizeY = cadSizeY,
                 cadSizeZ = cadSizeZ,
-                boundingRadius = radius
+                boundingRadius = radius,
+                colors = finalColors,
+                plateY = plateY,
+                plateHalfSize = plateHalfSize,
+                plates = plates,
+                selectedPlateIndex = selectedPlateIndex
             )
         }
     }
