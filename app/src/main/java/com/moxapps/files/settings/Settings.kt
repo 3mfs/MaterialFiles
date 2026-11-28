@@ -206,4 +206,10 @@ object Settings {
             R.string.pref_key_model_viewer_max_triangles,
             R.string.pref_default_value_model_viewer_max_triangles
         )
+
+    val MODEL_VIEWER_BUILD_PLATE: SettingLiveData<String> =
+        StringSettingLiveData(
+            R.string.pref_key_model_viewer_build_plate,
+            R.string.pref_default_value_model_viewer_build_plate
+        )
 }

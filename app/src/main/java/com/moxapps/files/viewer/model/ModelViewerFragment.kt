@@ -105,6 +105,9 @@ class ModelViewerFragment : Fragment() {
             val plateIdx = selectedPlateIndex
             val maxTriangles = Settings.MODEL_VIEWER_MAX_TRIANGLES.valueCompat.toIntOrNull()
                 ?.coerceAtLeast(100_000) ?: MAX_VIEWER_TRIANGLES
+            val plateParts = Settings.MODEL_VIEWER_BUILD_PLATE.valueCompat.lowercase().split("x")
+            val bedWidth = plateParts.getOrNull(0)?.toFloatOrNull()?.takeIf { it > 0f } ?: 256f
+            val bedDepth = plateParts.getOrNull(1)?.toFloatOrNull()?.takeIf { it > 0f } ?: bedWidth
             val result = withContext(Dispatchers.IO) {
                 runCatching {
                     val is3mf = displayName.lowercase().endsWith(".3mf") ||
@@ -133,7 +136,7 @@ class ModelViewerFragment : Fragment() {
                                 }
                             }
                         }
-                        ModelMeshLoader.load3mfFile(file, maxTriangles, plateIdx)
+                        ModelMeshLoader.load3mfFile(file, maxTriangles, plateIdx, bedWidth, bedDepth)
                     } else {
                         val openStream = path?.newInputStream()
                             ?: requireContext().contentResolver.openInputStream(uri!!)
@@ -159,10 +162,11 @@ class ModelViewerFragment : Fragment() {
                     mesh.cadSizeY,
                     mesh.cadSizeZ
                 )
-                binding.infoText.text = if (mesh.plateHalfSize > 0f) {
-                    val plateSize = mesh.plateHalfSize * 2f
+                binding.infoText.text = if (mesh.plateHalfWidth > 0f && mesh.plateHalfDepth > 0f) {
+                    val plateW = mesh.plateHalfWidth * 2f
+                    val plateD = mesh.plateHalfDepth * 2f
                     "$baseInfo • " + getString(
-                        R.string.model_viewer_plate_size_format, plateSize, plateSize
+                        R.string.model_viewer_plate_size_format, plateW, plateD
                     )
                 } else {
                     baseInfo

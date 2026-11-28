@@ -4,6 +4,12 @@ package com.moxapps.files.settings
 
 import android.os.Build
 import android.os.Bundle
+import android.text.InputType
+import android.widget.EditText
+import android.widget.LinearLayout
+import androidx.preference.ListPreference
+import androidx.preference.Preference
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.moxapps.files.R
 import com.moxapps.files.theme.custom.CustomThemeHelper
 import com.moxapps.files.theme.custom.ThemeColor
@@ -24,6 +30,72 @@ class SettingsPreferenceFragment : PreferenceFragmentCompat() {
                 activity.setApplicationLocalesPre33(locales)
             }
         }
+
+        setupBuildPlatePreference()
+    }
+
+    private fun setupBuildPlatePreference() {
+        val pref = preferenceScreen.findPreference<ListPreference>(
+            getString(R.string.pref_key_model_viewer_build_plate)
+        ) ?: return
+        pref.summaryProvider = Preference.SummaryProvider<ListPreference> { lp ->
+            val current = lp.value ?: "256x256"
+            val idx = lp.findIndexOfValue(current)
+            if (idx >= 0 && current != "custom") {
+                lp.entries[idx]
+            } else {
+                val (w, d) = parseBuildPlateDimensions(current)
+                getString(R.string.settings_model_viewer_build_plate_custom_summary_format, w, d)
+            }
+        }
+        pref.setOnPreferenceChangeListener { _, newValue ->
+            if (newValue == "custom") {
+                showCustomBuildPlateDialog(pref)
+                false
+            } else {
+                true
+            }
+        }
+    }
+
+    private fun showCustomBuildPlateDialog(pref: ListPreference) {
+        val context = requireContext()
+        val (curW, curD) = parseBuildPlateDimensions(pref.value)
+        val density = resources.displayMetrics.density
+        val pad = (20 * density).toInt()
+        val container = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, (8 * density).toInt(), pad, 0)
+        }
+        val widthInput = EditText(context).apply {
+            hint = getString(R.string.settings_model_viewer_build_plate_width_hint)
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setText(curW.toInt().toString())
+        }
+        val depthInput = EditText(context).apply {
+            hint = getString(R.string.settings_model_viewer_build_plate_depth_hint)
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setText(curD.toInt().toString())
+        }
+        container.addView(widthInput)
+        container.addView(depthInput)
+        MaterialAlertDialogBuilder(context)
+            .setTitle(R.string.settings_model_viewer_build_plate_custom_title)
+            .setView(container)
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+                val w = widthInput.text.toString().toIntOrNull()?.coerceIn(50, 2000) ?: curW.toInt()
+                val d = depthInput.text.toString().toIntOrNull()?.coerceIn(50, 2000) ?: curD.toInt()
+                pref.value = "${w}x${d}"
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun parseBuildPlateDimensions(raw: String?): Pair<Float, Float> {
+        val parts = raw?.lowercase()?.split("x")
+        val w = parts?.getOrNull(0)?.toFloatOrNull()?.takeIf { it > 0f } ?: 256f
+        val d = parts?.getOrNull(1)?.toFloatOrNull()?.takeIf { it > 0f } ?: w
+        return w to d
     }
 
     override fun onActivityCreated(savedInstanceState: Bundle?) {

@@ -190,9 +190,11 @@ object ModelMeshLoader {
     fun load3mf(
         inputStream: InputStream,
         maxTriangles: Int = Int.MAX_VALUE,
-        plateIndex: Int = 0
+        plateIndex: Int = 0,
+        plateBedWidth: Float = 256f,
+        plateBedDepth: Float = 256f
     ): ModelMesh = with3mfTempFile(inputStream) { file ->
-        load3mfFile(file, maxTriangles, plateIndex)
+        load3mfFile(file, maxTriangles, plateIndex, plateBedWidth, plateBedDepth)
     }
 
     private inline fun <T> with3mfTempFile(inputStream: InputStream, block: (File) -> T): T {
@@ -211,11 +213,13 @@ object ModelMeshLoader {
     fun load3mfFile(
         file: File,
         maxTriangles: Int = Int.MAX_VALUE,
-        plateIndex: Int = 0
+        plateIndex: Int = 0,
+        plateBedWidth: Float = 256f,
+        plateBedDepth: Float = 256f
     ): ModelMesh {
         val parsedModels = mutableMapOf<String, ThreeMfModel>()
         var bambuFilamentColors: IntArray = IntArray(0)
-        var modelSettings = BambuModelSettings(emptyMap(), emptyList())
+        var modelSettings = BambuModelSettings(emptyMap(), emptyMap(), emptySet(), emptyList())
         var totalEntries = 0
         val modelEntries = mutableMapOf<String, java.util.zip.ZipEntry>()
         ZipFile(file).use { zip ->
@@ -329,6 +333,8 @@ object ModelMeshLoader {
             }
         }
         val objectExtruders = modelSettings.objectExtruders
+        val partExtruders = modelSettings.partExtruders
+        val skippedParts = modelSettings.skippedParts
         val plates = modelSettings.plates
         val safePlateIndex = if (plates.isNotEmpty()) {
             plateIndex.coerceIn(0, plates.lastIndex)
@@ -386,11 +392,16 @@ object ModelMeshLoader {
             objectId: String,
             transform: FloatArray,
             inheritedExtruder: Int,
-            depth: Int
+            depth: Int,
+            parentObjectId: String? = null
         ) {
             if (depth > 16) return
+            val partKey = if (parentObjectId != null) "$parentObjectId:$objectId" else null
+            if (partKey != null && partKey in skippedParts) return
             val obj = model.objects[objectId] ?: return
-            val objExtruder = objectExtruders[objectId] ?: inheritedExtruder
+            val objExtruder = (partKey?.let { partExtruders[it] })
+                ?: objectExtruders[objectId]
+                ?: inheritedExtruder
             val objFallbackColor = when {
                 obj.defaultColor != -1 -> obj.defaultColor
                 objExtruder > 0 && objExtruder <= bambuFilamentColors.size ->
@@ -419,7 +430,7 @@ object ModelMeshLoader {
                 } else {
                     transform
                 }
-                emitObject(targetModel, comp.objectId, combined, objExtruder, depth + 1)
+                emitObject(targetModel, comp.objectId, combined, objExtruder, depth + 1, objectId)
             }
         }
 
@@ -449,7 +460,8 @@ object ModelMeshLoader {
             triangleCount = collector.triangleCount,
             rawColors = if (collector.hasColors) collector.colors else null,
             showBuildPlate = true,
-            plateBedSize = 256f,
+            plateBedWidth = plateBedWidth,
+            plateBedDepth = plateBedDepth,
             plates = plates,
             selectedPlateIndex = safePlateIndex
         )
@@ -1052,16 +1064,21 @@ object ModelMeshLoader {
 
     private class BambuModelSettings(
         val objectExtruders: Map<String, Int>,
+        val partExtruders: Map<String, Int>,
+        val skippedParts: Set<String>,
         val plates: List<ThreeMfPlateInfo>
     )
 
     private fun parseBambuModelSettings(xmlText: String): BambuModelSettings {
         val objectExtruders = mutableMapOf<String, Int>()
+        val partExtruders = mutableMapOf<String, Int>()
+        val skippedParts = mutableSetOf<String>()
         val plates = mutableListOf<ThreeMfPlateInfo>()
         try {
             val parser = android.util.Xml.newPullParser()
             parser.setInput(java.io.StringReader(xmlText))
             var currentObjId: String? = null
+            var currentPartId: String? = null
             var inPlate = false
             var inModelInstance = false
             var currentPlateId: String? = null
@@ -1073,6 +1090,14 @@ object ModelMeshLoader {
                     org.xmlpull.v1.XmlPullParser.START_TAG -> when (parser.name) {
                         "object" -> if (!inPlate) {
                             currentObjId = parser.getAttributeValue(null, "id")
+                            currentPartId = null
+                        }
+                        "part" -> if (!inPlate && currentObjId != null) {
+                            currentPartId = parser.getAttributeValue(null, "id")
+                            val subtype = parser.getAttributeValue(null, "subtype")
+                            if (currentPartId != null && subtype != null && subtype != "normal_part") {
+                                skippedParts.add("$currentObjId:$currentPartId")
+                            }
                         }
                         "plate" -> {
                             inPlate = true
@@ -1089,7 +1114,11 @@ object ModelMeshLoader {
                             when {
                                 currentObjId != null && key == "extruder" -> {
                                     value?.toIntOrNull()?.let { ext ->
-                                        objectExtruders[currentObjId] = ext
+                                        if (currentPartId != null) {
+                                            partExtruders["$currentObjId:$currentPartId"] = ext
+                                        } else {
+                                            objectExtruders[currentObjId] = ext
+                                        }
                                     }
                                 }
                                 inModelInstance && key == "object_id" && value != null -> {
@@ -1105,8 +1134,12 @@ object ModelMeshLoader {
                         }
                     }
                     org.xmlpull.v1.XmlPullParser.END_TAG -> when (parser.name) {
+                        "part" -> if (!inPlate) {
+                            currentPartId = null
+                        }
                         "object" -> if (!inPlate) {
                             currentObjId = null
+                            currentPartId = null
                         }
                         "model_instance" -> inModelInstance = false
                         "plate" -> {
@@ -1130,7 +1163,7 @@ object ModelMeshLoader {
             }
         } catch (_: Exception) {
         }
-        return BambuModelSettings(objectExtruders, plates)
+        return BambuModelSettings(objectExtruders, partExtruders, skippedParts, plates)
     }
 
     private fun parseHexColor(hex: String?): Int {

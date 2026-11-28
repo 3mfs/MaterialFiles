@@ -91,4 +91,16 @@
         <item>2500000</item>
         <item>5000000</item>
     </string-array>
+    <string name="pref_key_model_viewer_build_plate">key_model_viewer_build_plate</string>
+    <string name="pref_default_value_model_viewer_build_plate">256x256</string>
+    <string-array name="pref_entry_values_model_viewer_build_plate">
+        <item>180x180</item>
+        <item>256x256</item>
+        <item>350x320</item>
+        <item>250x210</item>
+        <item>220x220</item>
+        <item>300x300</item>
+        <item>350x350</item>
+        <item>custom</item>
+    </string-array>
 </resources>

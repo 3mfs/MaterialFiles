@@ -116,5 +116,12 @@
             android:entryValues="@array/pref_entry_values_model_viewer_max_triangles"
             android:defaultValue="@string/pref_default_value_model_viewer_max_triangles"
             app:useSimpleSummaryProvider="true" />
+
+        <ListPreference
+            android:key="@string/pref_key_model_viewer_build_plate"
+            android:title="@string/settings_model_viewer_build_plate_title"
+            android:entries="@array/settings_model_viewer_build_plate_entries"
+            android:entryValues="@array/pref_entry_values_model_viewer_build_plate"
+            android:defaultValue="@string/pref_default_value_model_viewer_build_plate" />
     </PreferenceCategory>
 </PreferenceScreen>

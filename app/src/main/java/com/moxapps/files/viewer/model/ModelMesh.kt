@@ -26,6 +26,9 @@ class ModelMesh(
     val plateY: Float = 0f,
     /** Half-width of the build plate in CAD units (mm), or 0 if no plate should be drawn. */
     val plateHalfSize: Float = 0f,
+    /** Half-width (X) and half-depth (Z in GL) of the build plate in mm. */
+    val plateHalfWidth: Float = plateHalfSize,
+    val plateHalfDepth: Float = plateHalfSize,
     /** Available 3MF plates when the file defines multiple plates. */
     val plates: List<ThreeMfPlateInfo> = emptyList(),
     /** Currently selected plate index in [plates]. */
@@ -41,7 +44,8 @@ class ModelMesh(
             triangleCount: Int,
             rawColors: ByteArray? = null,
             showBuildPlate: Boolean = false,
-            plateBedSize: Float = 256f,
+            plateBedWidth: Float = 256f,
+            plateBedDepth: Float = 256f,
             plates: List<ThreeMfPlateInfo> = emptyList(),
             selectedPlateIndex: Int = 0
         ): ModelMesh {
@@ -146,11 +150,17 @@ class ModelMesh(
                 t += 9
             }
 
-            val plateHalfSize = if (showBuildPlate) {
-                max(plateBedSize * 0.5f, max(cadSizeX, cadSizeY) * 0.65f)
+            val plateHalfWidth = if (showBuildPlate) {
+                max(plateBedWidth * 0.5f, cadSizeX * 0.65f)
             } else {
                 0f
             }
+            val plateHalfDepth = if (showBuildPlate) {
+                max(plateBedDepth * 0.5f, cadSizeY * 0.65f)
+            } else {
+                0f
+            }
+            val plateHalfSize = max(plateHalfWidth, plateHalfDepth)
             val plateZ = if (minZ in -1f..20f) 0f else minZ
             val plateY = plateZ - centerZ
             val radius = max(
@@ -171,6 +181,8 @@ class ModelMesh(
                 colors = finalColors,
                 plateY = plateY,
                 plateHalfSize = plateHalfSize,
+                plateHalfWidth = plateHalfWidth,
+                plateHalfDepth = plateHalfDepth,
                 plates = plates,
                 selectedPlateIndex = selectedPlateIndex
             )

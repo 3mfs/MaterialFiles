@@ -56,6 +56,7 @@ class ModelGlSurfaceView @JvmOverloads constructor(
 
     init {
         setEGLContextClientVersion(2)
+        preserveEGLContextOnPause = true
         setRenderer(renderer)
         renderMode = RENDERMODE_WHEN_DIRTY
     }
@@ -233,6 +234,15 @@ class ModelGlSurfaceView @JvmOverloads constructor(
             GLES20.glClearColor(0.22f, 0.25f, 0.29f, 1f)
             GLES20.glEnable(GLES20.GL_DEPTH_TEST)
 
+            // Fresh EGL context invalidates any prior VBO IDs.
+            vertexVbo = 0
+            normalVbo = 0
+            colorVbo = 0
+            lineVbo = 0
+            plateQuadVbo = 0
+            plateGridVbo = 0
+            plateGridVertexCount = 0
+
             val vShader = compileShader(GLES20.GL_VERTEX_SHADER, VERTEX_SHADER)
             val fShader = compileShader(GLES20.GL_FRAGMENT_SHADER, FRAGMENT_SHADER)
             program = GLES20.glCreateProgram().also {
@@ -246,7 +256,7 @@ class ModelGlSurfaceView @JvmOverloads constructor(
             mvpHandle = GLES20.glGetUniformLocation(program, "uMvpMatrix")
             mvHandle = GLES20.glGetUniformLocation(program, "uMvMatrix")
 
-            pendingMesh?.let {
+            (pendingMesh ?: uploadedMeshRef)?.let {
                 uploadMesh(it)
                 pendingMesh = null
             }
@@ -298,22 +308,22 @@ class ModelGlSurfaceView @JvmOverloads constructor(
                 uploadByteVbo(colorVbo, meshColors, vertexCount * 3)
             }
 
-            if (mesh.plateHalfSize > 0f) {
-                uploadBuildPlate(mesh.plateHalfSize, mesh.plateY)
+            if (mesh.plateHalfWidth > 0f && mesh.plateHalfDepth > 0f) {
+                uploadBuildPlate(mesh.plateHalfWidth, mesh.plateHalfDepth, mesh.plateY)
             }
 
             GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
         }
 
-        private fun uploadBuildPlate(half: Float, plateY: Float) {
+        private fun uploadBuildPlate(halfW: Float, halfD: Float, plateY: Float) {
             val quadY = plateY - 0.15f
             val quadVerts = floatArrayOf(
-                -half, quadY, -half,
-                half, quadY, -half,
-                half, quadY, half,
-                -half, quadY, -half,
-                half, quadY, half,
-                -half, quadY, half
+                -halfW, quadY, -halfD,
+                halfW, quadY, -halfD,
+                halfW, quadY, halfD,
+                -halfW, quadY, -halfD,
+                halfW, quadY, halfD,
+                -halfW, quadY, halfD
             )
             val qIds = IntArray(1)
             GLES20.glGenBuffers(1, qIds, 0)
@@ -322,22 +332,26 @@ class ModelGlSurfaceView @JvmOverloads constructor(
             GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, plateQuadVbo)
             GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, qBuf.capacity() * 4, qBuf, GLES20.GL_STATIC_DRAW)
 
+            val maxHalf = maxOf(halfW, halfD)
             val step = when {
-                half <= 160f -> 10f
-                half <= 320f -> 20f
+                maxHalf <= 160f -> 10f
+                maxHalf <= 320f -> 20f
                 else -> 50f
             }
             val lines = ArrayList<Float>()
-            var pos = -half
-            while (pos <= half + 0.01f) {
-                val p = pos.coerceIn(-half, half)
-                // X-parallel line
-                lines.add(-half); lines.add(plateY); lines.add(p)
-                lines.add(half); lines.add(plateY); lines.add(p)
-                // Z-parallel line
-                lines.add(p); lines.add(plateY); lines.add(-half)
-                lines.add(p); lines.add(plateY); lines.add(half)
-                pos += step
+            var posZ = -halfD
+            while (posZ <= halfD + 0.01f) {
+                val pz = posZ.coerceIn(-halfD, halfD)
+                lines.add(-halfW); lines.add(plateY); lines.add(pz)
+                lines.add(halfW); lines.add(plateY); lines.add(pz)
+                posZ += step
+            }
+            var posX = -halfW
+            while (posX <= halfW + 0.01f) {
+                val px = posX.coerceIn(-halfW, halfW)
+                lines.add(px); lines.add(plateY); lines.add(-halfD)
+                lines.add(px); lines.add(plateY); lines.add(halfD)
+                posX += step
             }
             plateGridVertexCount = lines.size / 3
             val gIds = IntArray(1)

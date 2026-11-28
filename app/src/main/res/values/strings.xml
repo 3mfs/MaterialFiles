@@ -832,6 +832,21 @@
         <item>2.5M (High detail)</item>
         <item>5M (Maximum detail)</item>
     </string-array>
+    <string name="settings_model_viewer_build_plate_title">3D viewer build plate</string>
+    <string-array name="settings_model_viewer_build_plate_entries">
+        <item>Bambu A1 mini (180 × 180 mm)</item>
+        <item>Bambu A1 / P1S / X1C / P2S (256 × 256 mm)</item>
+        <item>Bambu H2D (350 × 320 mm)</item>
+        <item>Prusa MK4 / Core One (250 × 210 mm)</item>
+        <item>Creality Ender-3 / K1 (220 × 220 mm)</item>
+        <item>Large (300 × 300 mm)</item>
+        <item>Voron / XL (350 × 350 mm)</item>
+        <item>Enter custom dimensions…</item>
+    </string-array>
+    <string name="settings_model_viewer_build_plate_custom_title">Custom build plate (mm)</string>
+    <string name="settings_model_viewer_build_plate_width_hint">Width (mm)</string>
+    <string name="settings_model_viewer_build_plate_depth_hint">Depth (mm)</string>
+    <string name="settings_model_viewer_build_plate_custom_summary_format">Custom (%1$.0f × %2$.0f mm)</string>
 
     <string name="about_title">About</string>
     <string name="about_version_title">Version</string>
