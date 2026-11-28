@@ -3,6 +3,7 @@
 package com.moxapps.files.filelist
 
 import android.os.AsyncTask
+import android.util.LruCache
 import java8.nio.file.DirectoryIteratorException
 import java8.nio.file.Path
 import com.moxapps.files.file.FileItem
@@ -33,7 +34,8 @@ class FileListLiveData(private val path: Path) : CloseableLiveData<Stateful<List
 
     fun loadValue() {
         future?.cancel(true)
-        value = Loading(value?.value)
+        val cached = value?.value ?: if (path.isRemotePath) directoryCache.get(cacheKey) else null
+        value = Loading(cached)
         future = (AsyncTask.THREAD_POOL_EXECUTOR as ExecutorService).submit<Unit> {
             val value = try {
                 path.newDirectoryStream().use { directoryStream ->
@@ -49,6 +51,9 @@ class FileListLiveData(private val path: Path) : CloseableLiveData<Stateful<List
                             e.printStackTrace()
                         }
                     }
+                    if (path.isRemotePath) {
+                        directoryCache.put(cacheKey, fileList)
+                    }
                     Success(fileList as List<FileItem>)
                 }
             } catch (e: Exception) {
@@ -57,6 +62,9 @@ class FileListLiveData(private val path: Path) : CloseableLiveData<Stateful<List
             postValue(value)
         }
     }
+
+    private val cacheKey: String
+        get() = path.toUri().toString()
 
     private fun onChangeObserved() {
         if (hasActiveObservers()) {
@@ -76,5 +84,10 @@ class FileListLiveData(private val path: Path) : CloseableLiveData<Stateful<List
     override fun close() {
         observer.close()
         future?.cancel(true)
+    }
+
+    companion object {
+        private const val MAX_CACHED_DIRECTORIES = 64
+        private val directoryCache = LruCache<String, List<FileItem>>(MAX_CACHED_DIRECTORIES)
     }
 }

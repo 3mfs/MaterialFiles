@@ -1,5 +1,6 @@
 package com.moxapps.files.provider.webdav.client
 
+import android.util.Log
 import at.bitfire.dav4jvm.DavResource
 import at.bitfire.dav4jvm.DavResourceAccessor
 import at.bitfire.dav4jvm.QuotedStringUtils
@@ -35,8 +36,8 @@ fun DavResource.getRangeCompat(
     offset: Long,
     size: Int,
     headers: Headers?
-): InputStream =
-    followRedirects {
+): InputStream {
+    val response = followRedirects {
         val request = Request.Builder().get().url(location)
         if (headers != null) {
             request.headers(headers)
@@ -44,15 +45,50 @@ fun DavResource.getRangeCompat(
         request.header("Accept", accept)
         val lastIndex = offset + size - 1
         request.header("Range", "bytes=$offset-$lastIndex")
+        Log.d("WebDavDebug", "GET ${location} Range=bytes=$offset-$lastIndex")
         httpClient.newCall(request.build()).execute()
     }
-        .also {
-            checkStatus(it)
-            if (it.code != HttpURLConnection.HTTP_PARTIAL) {
-                throw HttpException(it)
-            }
+    Log.d("WebDavDebug", "GET response code=${response.code} contentLength=${response.header("Content-Length")} contentRange=${response.header("Content-Range")}")
+    checkStatus(response)
+    val stream = response.body?.byteStream()
+        ?: run {
+            response.close()
+            throw IOException("Empty response body")
         }
-        .body!!.byteStream()
+    return when (response.code) {
+        HttpURLConnection.HTTP_PARTIAL -> stream
+        HttpURLConnection.HTTP_OK -> {
+            if (offset > 0L) {
+                var remaining = offset
+                val skipBuf = ByteArray(16 * 1024)
+                while (remaining > 0L) {
+                    val toRead = minOf(remaining, skipBuf.size.toLong()).toInt()
+                    val n = stream.read(skipBuf, 0, toRead)
+                    if (n < 0) break
+                    remaining -= n
+                }
+            }
+            stream
+        }
+        else -> {
+            response.close()
+            throw HttpException(response)
+        }
+    }
+}
+
+@Throws(DavException::class, IOException::class)
+fun DavResource.headContentLengthCompat(): Long? {
+    val response = followRedirects {
+        val request = Request.Builder().head().url(location).build()
+        httpClient.newCall(request).execute()
+    }
+    return response.use {
+        checkStatus(it)
+        it.header("Content-Length")?.toLongOrNull()
+            ?: it.body?.contentLength()?.takeIf { len -> len >= 0L }
+    }
+}
 
 // This doesn't follow redirects since the request body is one-shot anyway.
 @Throws(DavException::class, IOException::class)

@@ -544,6 +544,16 @@
     <string name="storage_file_system_root_title">Root</string>
     <string name="storage_list_title">Storage</string>
     <string name="storage_list_empty">No storage</string>
+    <string name="storage_overview_title">Unified Storage</string>
+    <string name="storage_overview_subtitle_format">%1$d local • %2$d remote</string>
+    <string name="storage_overview_used_format">%1$s used</string>
+    <string name="storage_overview_total_format">%1$s total capacity</string>
+    <string name="storage_overview_cache_label">App cache</string>
+    <string name="storage_usage_of_total_format">%1$s of %2$s</string>
+    <string name="storage_usage_percent_format">%1$d%% used</string>
+    <string name="storage_status_mounted">Mounted</string>
+    <string name="storage_status_connected">Connected</string>
+    <string name="storage_status_hidden">Hidden</string>
     <string name="storage_add_storage_title">Add storage</string>
     <string name="storage_add_storage_android_data" translatable="false">Android/data</string>
     <string name="storage_add_storage_android_obb" translatable="false">Android/obb</string>
@@ -715,6 +725,11 @@
     <string name="image_viewer_title">Image viewer</string>
     <string name="image_viewer_subtitle_format">%1$,d/%2$,d</string>
     <string name="image_viewer_delete_message_format" translatable="false">@string/file_delete_message_file_format</string>
+    <string name="model_viewer_title">3D Model viewer</string>
+    <string name="model_viewer_info_format">%1$,d triangles • %2$.1f × %3$.1f × %4$.1f mm</string>
+    <string name="model_viewer_reset_camera">Reset view</string>
+    <string name="model_viewer_toggle_wireframe">Wireframe</string>
+    <string name="model_viewer_load_error">Failed to load 3D model</string>
     <string name="save_as_title">Save as</string>
     <string name="save_as_error">Error while saving file</string>
     <string name="save_as_success_format">“%1$s” has been saved to “%2$s”</string>
@@ -805,6 +820,8 @@
     <string name="settings_show_pdf_thumbnail_pre_28_title">Show thumbnail for PDF documents</string>
     <string name="settings_show_pdf_thumbnail_pre_28_summary">Might make the app unstable on older versions of Android</string>
     <string name="settings_read_remote_files_for_thumbnail_title">Read remote files for thumbnail</string>
+    <string name="settings_hide_root_storage_title">Hide Root in sidebar</string>
+    <string name="settings_hide_root_storage_summary">Hide the Root storage entry from the navigation drawer</string>
 
     <string name="about_title">About</string>
     <string name="about_version_title">Version</string>

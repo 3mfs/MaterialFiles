@@ -31,6 +31,7 @@ import com.moxapps.files.app.okHttpClient
 import com.moxapps.files.provider.common.LocalWatchService
 import com.moxapps.files.provider.common.NotifyEntryModifiedOutputStream
 import com.moxapps.files.provider.common.NotifyEntryModifiedSeekableByteChannel
+import okhttp3.Dispatcher
 import okhttp3.HttpUrl
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
@@ -60,7 +61,11 @@ object Client {
             if (client == null) {
                 val authenticatorInterceptor =
                     OkHttpAuthenticatorInterceptor(authenticator, authority)
+                val dispatcher = Dispatcher().apply {
+                    maxRequestsPerHost = 16
+                }
                 client = okHttpClient.newBuilder()
+                    .dispatcher(dispatcher)
                     // Turn off follow redirects for PROPFIND.
                     .followRedirects(false)
                     .cookieJar(MemoryCookieJar())
@@ -196,9 +201,8 @@ object Client {
         try {
             val client = getClient(path.authority)
             val resource = DavResource(client, path.url)
-            val patchSupport = resource.getPatchSupport()
             return NotifyEntryModifiedSeekableByteChannel(
-                FileByteChannel(resource, patchSupport, isAppend), path as Java8Path
+                FileByteChannel(resource, isAppend), path as Java8Path
             )
         } catch (e: IOException) {
             throw e.toDavException()

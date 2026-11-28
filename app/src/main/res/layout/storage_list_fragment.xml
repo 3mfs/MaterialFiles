@@ -19,7 +19,15 @@
             android:id="@+id/toolbar"
             android:layout_width="match_parent"
             android:layout_height="?actionBarSize"
+            app:layout_scrollFlags="scroll|enterAlways"
             app:popupTheme="?actionBarPopupTheme" />
+
+        <include
+            android:id="@+id/overviewInclude"
+            layout="@layout/storage_overview_card"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            app:layout_scrollFlags="scroll" />
     </com.moxapps.files.ui.CoordinatorAppBarLayout>
 
     <com.moxapps.files.ui.CoordinatorScrollingFrameLayout
@@ -39,6 +47,7 @@
             android:id="@+id/recyclerView"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
+            android:paddingTop="4dp"
             android:paddingBottom="@dimen/list_bottom_padding_with_fab"
             android:clipToPadding="false"
             android:fitsSystemWindows="true"

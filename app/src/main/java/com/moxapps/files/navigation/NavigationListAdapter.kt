@@ -14,6 +14,8 @@ import android.view.ViewGroup
 import androidx.annotation.Px
 import androidx.annotation.StyleRes
 import androidx.core.content.res.ResourcesCompat
+import androidx.core.graphics.ColorUtils
+import androidx.core.view.isVisible
 import androidx.core.view.updateLayoutParams
 import androidx.core.view.updatePaddingRelative
 import androidx.recyclerview.widget.RecyclerView
@@ -232,6 +234,17 @@ class NavigationListAdapter(
                 binding.iconImage.setImageDrawable(item.getIcon(binding.iconImage.context))
                 binding.titleText.text = item.getTitle(binding.titleText.context)
                 binding.subtitleText.text = item.getSubtitle(binding.subtitleText.context)
+                val usage = item.getStorageUsage(binding.usageProgress.context)
+                if (usage != null && usage.totalBytes > 0L) {
+                    val color = item.getStorageUsageColor(binding.usageProgress.context)
+                        ?: Color.parseColor("#38BDF8")
+                    binding.usageProgress.isVisible = true
+                    binding.usageProgress.setIndicatorColor(color)
+                    binding.usageProgress.trackColor = ColorUtils.setAlphaComponent(color, 45)
+                    binding.usageProgress.progress = usage.usedPercent
+                } else {
+                    binding.usageProgress.isVisible = false
+                }
             }
             ViewType.DIVIDER -> {}
         }

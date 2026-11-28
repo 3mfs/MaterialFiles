@@ -66,6 +66,7 @@ import com.moxapps.files.file.MimeType
 import com.moxapps.files.file.asMimeTypeOrNull
 import com.moxapps.files.file.extension
 import com.moxapps.files.file.fileProviderUri
+import com.moxapps.files.file.is3dModel
 import com.moxapps.files.file.isApk
 import com.moxapps.files.file.isImage
 import com.moxapps.files.filejob.FileJobProgressDialogFragment
@@ -131,6 +132,7 @@ import com.moxapps.files.util.valueCompat
 import com.moxapps.files.util.viewModels
 import com.moxapps.files.util.withChooser
 import com.moxapps.files.viewer.image.ImageViewerActivity
+import com.moxapps.files.viewer.model.ModelViewerActivity
 
 class FileListFragment : Fragment(), BreadcrumbLayout.Listener, FileListAdapter.Listener,
     ConfirmReplaceFileDialogFragment.Listener, OpenApkDialogFragment.Listener,
@@ -1267,6 +1269,15 @@ class FileListFragment : Fragment(), BreadcrumbLayout.Listener, FileListAdapter.
     private fun openFileWithIntent(file: FileItem, withChooser: Boolean) {
         val path = file.path
         val mimeType = file.mimeType
+        if (!withChooser && (mimeType.is3dModel || path.is3dModelExtension)) {
+            val intent = ModelViewerActivity::class.createIntent().apply {
+                setDataAndType(path.fileProviderUri, mimeType.value)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                extraPath = path
+            }
+            startActivitySafe(intent)
+            return
+        }
         val intent = path.fileProviderUri.createViewIntent(mimeType)
             .apply {
                 if (!path.fileSystem.isReadOnly) {

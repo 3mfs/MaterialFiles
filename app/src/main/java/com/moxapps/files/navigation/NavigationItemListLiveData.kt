@@ -11,6 +11,7 @@ object NavigationItemListLiveData : MediatorLiveData<List<NavigationItem?>>() {
         // Initialize value before we have any active observer.
         loadValue()
         addSource(Settings.STORAGES) { loadValue() }
+        addSource(Settings.HIDE_ROOT_STORAGE) { loadValue() }
         addSource(StorageVolumeListLiveData) { loadValue() }
         addSource(StandardDirectoriesLiveData) { loadValue() }
         addSource(Settings.BOOKMARK_DIRECTORIES) { loadValue() }

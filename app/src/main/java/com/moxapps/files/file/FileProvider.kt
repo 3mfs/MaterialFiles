@@ -18,6 +18,7 @@ import android.os.ParcelFileDescriptor
 import android.os.Process
 import android.os.StrictMode
 import android.provider.DocumentsContract
+import android.util.Log
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.system.ErrnoException
@@ -186,6 +187,7 @@ class FileProvider : ContentProvider() {
         // ContentProvider has already checked granted permissions
         val path = uri.fileProviderPath
         val modeBits = ParcelFileDescriptor.parseMode(mode)
+        Log.i("WebDavDebug", "FileProvider.openFile uri=$uri mode=$mode path=$path class=${path.javaClass.simpleName}")
         if (path.canOpenDirectly(modeBits)) {
             return ParcelFileDescriptor.open(path.toFile(), modeBits)
         }
@@ -197,6 +199,7 @@ class FileProvider : ContentProvider() {
                 path.newByteChannel(options)
             }
         } catch (e: IOException) {
+            Log.e("WebDavDebug", "FileProvider.openFile newByteChannel failed for $path", e)
             throw e.toFileNotFoundException()
         }
         return try {
@@ -204,6 +207,7 @@ class FileProvider : ContentProvider() {
                 modeBits, ChannelCallback(channel), callbackHandler
             )
         } catch (e: IOException) {
+            Log.e("WebDavDebug", "FileProvider.openFile openProxyFileDescriptor failed for $path", e)
             throw e.toFileNotFoundException()
         }
     }
@@ -259,8 +263,9 @@ class FileProvider : ContentProvider() {
         override fun onGetSize(): Long {
             ensureNotReleased()
             return try {
-                channel.size()
+                channel.size().also { Log.i("WebDavDebug", "ChannelCallback.onGetSize -> $it") }
             } catch (e: IOException) {
+                Log.e("WebDavDebug", "ChannelCallback.onGetSize failed", e)
                 throw e.toErrnoException()
             }
         }
@@ -272,6 +277,7 @@ class FileProvider : ContentProvider() {
                 try {
                     channel.position(offset)
                 } catch (e: IOException) {
+                    Log.e("WebDavDebug", "ChannelCallback.onRead position($offset) failed", e)
                     throw e.toErrnoException()
                 }
                 this.offset = offset
@@ -283,6 +289,7 @@ class FileProvider : ContentProvider() {
                 val channelSize = try {
                     channel.read(buffer)
                 } catch (e: IOException) {
+                    Log.e("WebDavDebug", "ChannelCallback.onRead(offset=$offset, size=$size) failed", e)
                     throw e.toErrnoException()
                 }
                 if (channelSize == -1) {

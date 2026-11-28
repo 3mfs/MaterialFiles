@@ -11,6 +11,7 @@ import com.moxapps.files.file.FileItem
 import com.moxapps.files.file.MimeType
 import com.moxapps.files.file.getBrokenSymbolicLinkName
 import com.moxapps.files.file.getName
+import com.moxapps.files.file.is3dModel
 import com.moxapps.files.file.isApk
 import com.moxapps.files.file.isImage
 import com.moxapps.files.file.isMedia
@@ -72,9 +73,15 @@ val FileItem.supportsThumbnail: Boolean
             mimeType.isPdf && (path.isLinuxPath || path.isDocumentPath) ->
                 Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
                     || Settings.SHOW_PDF_THUMBNAIL_PRE_28.valueCompat
+            mimeType.is3dModel || path.is3dModelExtension -> true
             else -> false
         }
     }
+
+val Path.is3dModelExtension: Boolean
+    get() = fileName?.toString()?.lowercase()?.let {
+        it.endsWith(".stl") || it.endsWith(".3mf")
+    } == true
 
 // @see android.content.pm.parsing.ApkLiteParseUtils.parsePackageSplitNames
 // @see android.content.pm.parsing.ParsingPackageUtils.validateName

@@ -49,3 +49,24 @@ val MimeType.isMedia: Boolean
 
 val MimeType.isPdf: Boolean
     get() = this == MimeType.PDF
+
+private val stlMimeTypes = listOf(
+    "application/vnd.ms-pki.stl",
+    "model/stl",
+    "application/sla",
+    "application/x-stl"
+).map { it.asMimeType() }.toSet()
+
+private val threeMfMimeTypes = listOf(
+    "application/vnd.ms-3mfdocument",
+    "model/3mf"
+).map { it.asMimeType() }.toSet()
+
+val MimeType.isStl: Boolean
+    get() = this in stlMimeTypes
+
+val MimeType.is3mf: Boolean
+    get() = this in threeMfMimeTypes
+
+val MimeType.is3dModel: Boolean
+    get() = isStl || is3mf

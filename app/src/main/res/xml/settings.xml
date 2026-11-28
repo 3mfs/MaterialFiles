@@ -102,5 +102,11 @@
             android:key="@string/pref_key_read_remote_files_for_thumbnail"
             android:title="@string/settings_read_remote_files_for_thumbnail_title"
             android:defaultValue="@bool/pref_default_value_read_remote_files_for_thumbnail" />
+
+        <SwitchPreferenceCompat
+            android:key="@string/pref_key_hide_root_storage"
+            android:title="@string/settings_hide_root_storage_title"
+            android:summary="@string/settings_hide_root_storage_summary"
+            android:defaultValue="@bool/pref_default_value_hide_root_storage" />
     </PreferenceCategory>
 </PreferenceScreen>

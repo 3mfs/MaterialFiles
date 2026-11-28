@@ -20,13 +20,19 @@ import com.moxapps.files.R
 import com.moxapps.files.compat.use
 import com.moxapps.files.file.MimeType
 import com.moxapps.files.file.asMimeType
+import com.moxapps.files.file.is3dModel
+import com.moxapps.files.file.is3mf
 import com.moxapps.files.file.isApk
 import com.moxapps.files.file.isImage
 import com.moxapps.files.file.isMedia
 import com.moxapps.files.file.isPdf
+import com.moxapps.files.file.isStl
 import com.moxapps.files.file.isVideo
 import com.moxapps.files.file.lastModifiedInstant
+import com.moxapps.files.filelist.is3dModelExtension
 import com.moxapps.files.filelist.isRemotePath
+import com.moxapps.files.viewer.model.ModelMeshLoader
+import com.moxapps.files.viewer.model.ModelThumbnailRenderer
 import com.moxapps.files.provider.common.AndroidFileTypeDetector
 import com.moxapps.files.provider.common.newInputStream
 import com.moxapps.files.provider.content.resolver.ResolverException
@@ -45,6 +51,8 @@ import com.moxapps.files.util.setDataSource
 import com.moxapps.files.util.valueCompat
 import okio.buffer
 import okio.source
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import java.io.Closeable
 import java.io.IOException
 import com.moxapps.files.util.setDataSource as appSetDataSource
@@ -116,6 +124,58 @@ class PathAttributesFetcher(
                 )
             }
             mimeType.isMedia && path.isMediaMetadataRetrieverCompatible -> {
+                fetchMediaThumbnail(path, mimeType)?.let { return it }
+            }
+            mimeType.isPdf && (path.isLinuxPath || path.isDocumentPath) -> {
+                try {
+                    return pdfPageFetcherFactory.create(path, options, imageLoader).fetch()
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+            mimeType.is3dModel || path.is3dModelExtension -> {
+                try {
+                    val fileNameLower = path.fileName?.toString()?.lowercase()
+                    val is3mfFile = mimeType.is3mf || fileNameLower?.endsWith(".3mf") == true
+                    if (is3mfFile) {
+                        val embeddedThumb = path.newInputStream().use {
+                            ModelMeshLoader.extract3mfThumbnail(it)
+                        }
+                        if (embeddedThumb != null) {
+                            return SourceResult(
+                                ImageSource(
+                                    embeddedThumb.inputStream().source().buffer(), options.context
+                                ),
+                                null, path.dataSource
+                            )
+                        }
+                    }
+                    val targetSize = when (width) {
+                        is Dimension.Pixels -> width.px.coerceIn(96, 384)
+                        else -> 192
+                    }
+                    val mesh = path.newInputStream().use {
+                        if (is3mfFile) {
+                            ModelMeshLoader.load3mf(it, THUMBNAIL_MAX_TRIANGLES)
+                        } else {
+                            ModelMeshLoader.loadStl(it, THUMBNAIL_MAX_TRIANGLES)
+                        }
+                    }
+                    val bitmap = ModelThumbnailRenderer.render(mesh, targetSize)
+                    return DrawableResult(
+                        bitmap.toDrawable(options.context.resources), false, path.dataSource
+                    )
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+        }
+        return null
+    }
+
+    private suspend fun fetchMediaThumbnail(path: Path, mimeType: MimeType): FetchResult? {
+        val block: suspend () -> FetchResult? = {
+            if (!mimeType.isVideo || !path.isRemotePath) {
                 val embeddedPicture = try {
                     MediaMetadataRetriever().use { retriever ->
                         retriever.setDataSource(path)
@@ -126,29 +186,37 @@ class PathAttributesFetcher(
                     null
                 }
                 if (embeddedPicture != null) {
-                    return SourceResult(
+                    SourceResult(
                         ImageSource(
                             embeddedPicture.inputStream().source().buffer(), options.context
                         ), null, path.dataSource
                     )
+                } else {
+                    null
                 }
-                if (mimeType.isVideo) {
-                    try {
-                        return videoFrameFetcherFactory.create(path, options, imageLoader).fetch()
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                    }
-                }
-            }
-            mimeType.isPdf && (path.isLinuxPath || path.isDocumentPath) -> {
+            } else {
+                null
+            } ?: if (mimeType.isVideo) {
                 try {
-                    return pdfPageFetcherFactory.create(path, options, imageLoader).fetch()
+                    videoFrameFetcherFactory.create(path, options, imageLoader).fetch()
                 } catch (e: Exception) {
                     e.printStackTrace()
+                    null
                 }
+            } else {
+                null
             }
         }
-        return null
+        return if (path.isRemotePath) {
+            remoteMediaThumbnailSemaphore.withPermit { block() }
+        } else {
+            block()
+        }
+    }
+
+    companion object {
+        private const val THUMBNAIL_MAX_TRIANGLES = 50_000
+        private val remoteMediaThumbnailSemaphore = Semaphore(2)
     }
 
     class Factory(private val context: Context) : Fetcher.Factory<Pair<Path, BasicFileAttributes>> {

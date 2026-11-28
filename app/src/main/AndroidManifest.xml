@@ -348,6 +348,23 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name="com.moxapps.files.viewer.model.ModelViewerActivity"
+            android:exported="true"
+            android:label="@string/model_viewer_title"
+            android:theme="@style/Theme.MaterialFiles.Immersive">
+            <intent-filter tools:ignore="AppLinkUrlError">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/vnd.ms-pki.stl" />
+                <data android:mimeType="model/stl" />
+                <data android:mimeType="application/sla" />
+                <data android:mimeType="application/x-stl" />
+                <data android:mimeType="application/vnd.ms-3mfdocument" />
+                <data android:mimeType="model/3mf" />
+            </intent-filter>
+        </activity>
+
         <service
             android:name="com.moxapps.files.filejob.FileJobService"
             android:foregroundServiceType="specialUse">

@@ -5,9 +5,11 @@ package com.moxapps.files.navigation
 import android.content.Context
 import android.content.Intent
 import android.graphics.drawable.Drawable
+import androidx.annotation.ColorInt
 import androidx.annotation.DrawableRes
 import java8.nio.file.Path
 import com.moxapps.files.compat.getDrawableCompat
+import com.moxapps.files.storage.StorageUsageInfo
 
 abstract class NavigationItem {
     abstract val id: Long
@@ -20,6 +22,11 @@ abstract class NavigationItem {
     abstract fun getTitle(context: Context): String
 
     open fun getSubtitle(context: Context): String? = null
+
+    open fun getStorageUsage(context: Context): StorageUsageInfo? = null
+
+    @ColorInt
+    open fun getStorageUsageColor(context: Context): Int? = null
 
     open fun isChecked(listener: Listener): Boolean = false
 

@@ -26,6 +26,8 @@ import com.moxapps.files.settings.StandardDirectoryListActivity
 import com.moxapps.files.storage.AddStorageDialogActivity
 import com.moxapps.files.storage.FileSystemRoot
 import com.moxapps.files.storage.Storage
+import com.moxapps.files.storage.StorageUsage
+import com.moxapps.files.storage.StorageUsageInfo
 import com.moxapps.files.storage.StorageVolumeListLiveData
 import com.moxapps.files.util.createIntent
 import com.moxapps.files.util.isMounted
@@ -61,10 +63,14 @@ val navigationItems: List<NavigationItem?>
 
 private val storageItems: List<NavigationItem>
     @Size(min = 0)
-    get() =
-        Settings.STORAGES.valueCompat.filter { it.isVisible }.map {
-            if (it.path != null) PathStorageItem(it) else IntentStorageItem(it)
-        }
+    get() {
+        val hideRoot = Settings.HIDE_ROOT_STORAGE.valueCompat
+        return Settings.STORAGES.valueCompat
+            .filter { it.isVisible && !(hideRoot && it is FileSystemRoot) }
+            .map {
+                if (it.path != null) PathStorageItem(it) else IntentStorageItem(it)
+            }
+    }
 
 private abstract class PathItem(val path: Path) : NavigationItem() {
     override fun isChecked(listener: Listener): Boolean = listener.currentPath == path
@@ -97,6 +103,12 @@ private class PathStorageItem(
 
     override fun getSubtitle(context: Context): String? =
         storage.linuxPath?.let { getStorageSubtitle(it, context) }
+
+    override fun getStorageUsage(context: Context): StorageUsageInfo? =
+        StorageUsage.getStorageUsage(storage, context)
+
+    override fun getStorageUsageColor(context: Context): Int =
+        StorageUsage.getBrandColor(storage, context)
 
     override fun onLongClick(listener: Listener): Boolean {
         listener.launchIntent(storage.createEditIntent())
@@ -153,6 +165,11 @@ private class StorageVolumeItem(
 
     override fun getSubtitle(context: Context): String? =
         getStorageSubtitle(storageVolume.pathCompat, context)
+
+    override fun getStorageUsage(context: Context): StorageUsageInfo? =
+        StorageUsage.getLinuxUsage(storageVolume.pathCompat)
+
+    override fun getStorageUsageColor(context: Context): Int = StorageUsage.COLOR_SD_USB
 
     override fun getName(context: Context): String = getTitle(context)
 }

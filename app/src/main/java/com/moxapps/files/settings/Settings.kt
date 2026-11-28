@@ -194,4 +194,10 @@ object Settings {
             R.string.pref_key_read_remote_files_for_thumbnail,
             R.bool.pref_default_value_read_remote_files_for_thumbnail
         )
+
+    val HIDE_ROOT_STORAGE: SettingLiveData<Boolean> =
+        BooleanSettingLiveData(
+            R.string.pref_key_hide_root_storage,
+            R.bool.pref_default_value_hide_root_storage
+        )
 }
